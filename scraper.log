@@ -1,0 +1,14 @@
+2024-12-02 15:28:44,293 - INFO - Starting ETL process...
+2024-12-02 15:28:44,293 - INFO - Starting data scraping process for 2024-12-01...
+2024-12-02 15:28:44,297 - DEBUG - Using proactor: IocpProactor
+2024-12-02 15:29:28,126 - DEBUG - Extracted headers: []
+2024-12-02 15:29:28,130 - INFO - Scraped data for 2024-12-01
+2024-12-02 15:29:28,265 - DEBUG - Columns in the DataFrame: ['Date']
+2024-12-02 15:29:28,270 - DEBUG - First few rows in the DataFrame:
+Empty DataFrame
+Columns: [Date]
+Index: []
+2024-12-02 15:29:28,270 - INFO - Starting data processing...
+2024-12-02 15:29:28,270 - ERROR - Column 'Genco' is missing from the scraped data.
+2024-12-02 15:29:28,270 - ERROR - Scraping process failed: Column 'Genco' is missing from the scraped data.
+2024-12-02 15:29:28,271 - ERROR - Data scraping failed. Aborting process.
