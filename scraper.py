@@ -66,6 +66,7 @@ def scrape_and_process_data(target_date):
         # Validate and clean the DataFrame
         hourly_data_df = hourly_data_df.replace(r'^\s*$', pd.NA, regex=True)  # Replace empty strings with NaN
         hourly_data_df = hourly_data_df.dropna(subset=['Genco'])  # Drop rows with missing Genco data
+        hourly_data_df = hourly_data_df[hourly_data_df['Genco'] != 'zTOTAL']  # Remove rows where Genco equals zTotal
 
         # Remove unnecessary columns
         hourly_data_df = hourly_data_df.drop(columns=['#', 'TotalGeneration'], errors='ignore')
