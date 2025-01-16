@@ -33,18 +33,18 @@ jobs:
 
       - name: Debug Playwright Installation Path
         run: |
-          find / -type d -name ".local-browsers" 2>/dev/null
+          find / -type d -name ".local-browsers" 2>/dev/null || true
 
-      # - name: Verify Playwright Browsers
-      #   run: |
-      #     ls -la /opt/hostedtoolcache/Python/3.9.20/x64/lib/python3.9/site-packages/playwright/driver/package/.local-browsers/
+      - name: Verify Playwright Browsers
+        run: |
+          ls -la /opt/hostedtoolcache/Python/3.9.21/x64/lib/python3.9/site-packages/playwright/driver/package/.local-browsers/
 
-      # - name: Verify Playwright Installation
-      #   run: |
-      #     python -c "from playwright.sync_api import sync_playwright; p = sync_playwright().start(); p.stop()"
+      - name: Verify Playwright Installation
+        run: |
+          python -c "from playwright.sync_api import sync_playwright; p = sync_playwright().start(); p.stop()"
 
-      # - name: Run Scraper
-      #   run: |
-      #     python scraper.py
-      #   env:
-      #     PLAYWRIGHT_BROWSERS_PATH: 0
+      - name: Run Scraper
+        run: |
+          python scraper.py
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: 0
