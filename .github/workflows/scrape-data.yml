@@ -31,16 +31,20 @@ jobs:
           python -m pip install playwright
           PLAYWRIGHT_BROWSERS_PATH=0 python -m playwright install chromium
 
-      - name: Verify Playwright Browsers
+      - name: Debug Playwright Installation Path
         run: |
-          ls -la /opt/hostedtoolcache/Python/3.9.20/x64/lib/python3.9/site-packages/playwright/driver/package/.local-browsers/
+          find / -type d -name ".local-browsers" 2>/dev/null
 
-      - name: Verify Playwright Installation
-        run: |
-          python -c "from playwright.sync_api import sync_playwright; p = sync_playwright().start(); p.stop()"
+      # - name: Verify Playwright Browsers
+      #   run: |
+      #     ls -la /opt/hostedtoolcache/Python/3.9.20/x64/lib/python3.9/site-packages/playwright/driver/package/.local-browsers/
 
-      - name: Run Scraper
-        run: |
-          python scraper.py
-        env:
-          PLAYWRIGHT_BROWSERS_PATH: 0
+      # - name: Verify Playwright Installation
+      #   run: |
+      #     python -c "from playwright.sync_api import sync_playwright; p = sync_playwright().start(); p.stop()"
+
+      # - name: Run Scraper
+      #   run: |
+      #     python scraper.py
+      #   env:
+      #     PLAYWRIGHT_BROWSERS_PATH: 0
