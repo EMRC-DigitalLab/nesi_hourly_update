@@ -92,6 +92,11 @@ def scrape_and_process_data(target_date):
         unpivoted_df['EnergyGeneratedMWh'] = pd.to_numeric(unpivoted_df['EnergyGeneratedMWh'], errors='coerce')
         unpivoted_df.dropna(subset=['EnergyGeneratedMWh'], inplace=True)
 
+        # **** New Change: Filter the DataFrame to include only data for the target hour ****
+        # Calculate target hour from the passed target_date (which includes hour info)
+        target_hour = target_date.strftime("%H:00")
+        unpivoted_df = unpivoted_df[unpivoted_df['Hour'] == target_hour]
+
         print("Data processing completed successfully.")
         return unpivoted_df
 
@@ -146,9 +151,11 @@ def load_to_database(df):
 
 def main():
     try:
-        yesterday = datetime.now() - timedelta(days=1)
-        print("Starting ETL process...")
-        final_df = scrape_and_process_data(yesterday)
+        # Instead of scraping yesterday's data, we now calculate the target datetime as the current time minus one hour.
+        # For example, if the current time is 16:30, target_datetime will be 15:30, so we pull data for 15:00.
+        target_datetime = datetime.now() - timedelta(hours=1)
+        print("Target scraping date and hour:", target_datetime.strftime("%Y-%m-%d %H:%M"))
+        final_df = scrape_and_process_data(target_datetime)
 
         if final_df is not None:
             load_to_database(final_df)
