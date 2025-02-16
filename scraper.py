@@ -92,8 +92,8 @@ def scrape_and_process_data(target_date):
         unpivoted_df['EnergyGeneratedMWh'] = pd.to_numeric(unpivoted_df['EnergyGeneratedMWh'], errors='coerce')
         unpivoted_df.dropna(subset=['EnergyGeneratedMWh'], inplace=True)
 
-        # **** New Change: Filter the DataFrame to include only data for the target hour ****
-        # Calculate target hour from the passed target_date (which includes hour info)
+        # **** New Change: Filter to include only data for the target Nigeria hour ****
+        # target_date is assumed to be in Nigeria local time.
         target_hour = target_date.strftime("%H:00")
         unpivoted_df = unpivoted_df[unpivoted_df['Hour'] == target_hour]
 
@@ -151,11 +151,15 @@ def load_to_database(df):
 
 def main():
     try:
-        # Instead of scraping yesterday's data, we now calculate the target datetime as the current time minus one hour.
-        # For example, if the current time is 16:30, target_datetime will be 15:30, so we pull data for 15:00.
-        target_datetime = datetime.now() - timedelta(hours=1)
-        print("Target scraping date and hour:", target_datetime.strftime("%Y-%m-%d %H:%M"))
-        final_df = scrape_and_process_data(target_datetime)
+        # GitHub Actions runs in UTC.
+        # Convert current UTC to Nigeria local time (UTC+1), then subtract one hour and round down.
+        now_utc = datetime.utcnow()
+        now_nigeria = now_utc + timedelta(hours=1)
+        target_nigeria = now_nigeria - timedelta(hours=1)
+        target_nigeria = target_nigeria.replace(minute=0, second=0, microsecond=0)
+        print("Target scraping date and hour (Nigeria time):", target_nigeria.strftime("%Y-%m-%d %H:%M"))
+        
+        final_df = scrape_and_process_data(target_nigeria)
 
         if final_df is not None:
             load_to_database(final_df)
