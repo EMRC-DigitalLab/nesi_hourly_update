@@ -72,7 +72,10 @@ def scrape_and_process_data(target_date):
         hourly_data_df = hourly_data_df.drop(columns=['#', 'TotalGeneration'], errors='ignore')
 
         # Rename columns
-        hourly_data_df.rename(columns={'24:00': '00:00', 'Genco': 'Gencos'}, inplace=True)
+        hourly_data_df.rename(columns={
+        # '24:00': '00:00',  # For future reference: Uncomment to rename '24:00' to '00:00'
+        'Genco': 'Gencos'
+        }, inplace=True)
 
         # Validate columns for unpivoting
         hour_columns = [col for col in hourly_data_df.columns if ':' in col]
