@@ -24,12 +24,14 @@ def scrape_and_process_data(target_date):
             select_year = page.query_selector('//*[@id="ui-datepicker-div"]/div/div/select[2]')
             select_year.select_option(str(target_date.year))
 
-            # Select the month
+            # Select the month (note: month is zero-indexed in the UI)
             select_month = page.query_selector('//*[@id="ui-datepicker-div"]/div/div/select[1]')
             select_month.select_option(str(target_date.month - 1))
 
             # Select the day
-            day_element = page.wait_for_selector(f'//*[@id="ui-datepicker-div"]/table/tbody/tr/td/a[text()="{target_date.day}"]')
+            day_element = page.wait_for_selector(
+                f'//*[@id="ui-datepicker-div"]/table/tbody/tr/td/a[text()="{target_date.day}"]'
+            )
             day_element.click()
 
             # Click the "Generate Readings" button
@@ -49,7 +51,7 @@ def scrape_and_process_data(target_date):
                 cols = row.query_selector_all('td')
                 if cols:
                     row_data = [col.text_content().strip() for col in cols]
-                    row_data.insert(0, target_date.strftime('%Y-%m-%d'))  # Add the Date as the first column
+                    row_data.insert(0, target_date.strftime('%Y-%m-%d'))  # Prepend the Date column
                     all_data.append(row_data)
 
             print(f"Scraped data for {target_date.strftime('%Y-%m-%d')}")
@@ -66,23 +68,23 @@ def scrape_and_process_data(target_date):
         # Validate and clean the DataFrame
         hourly_data_df = hourly_data_df.replace(r'^\s*$', pd.NA, regex=True)  # Replace empty strings with NaN
         hourly_data_df = hourly_data_df.dropna(subset=['Genco'])  # Drop rows with missing Genco data
-        hourly_data_df = hourly_data_df[hourly_data_df['Genco'] != 'zTOTAL']  # Remove rows where Genco equals zTotal
+        hourly_data_df = hourly_data_df[hourly_data_df['Genco'] != 'zTOTAL']  # Remove rows where Genco equals zTOTAL
 
         # Remove unnecessary columns
         hourly_data_df = hourly_data_df.drop(columns=['#', 'TotalGeneration'], errors='ignore')
 
-        # Rename columns
+        # Rename columns (note: the renaming of '24:00' to '00:00' is commented out)
         hourly_data_df.rename(columns={
-        # '24:00': '00:00',  # For future reference: Uncomment to rename '24:00' to '00:00'
-        'Genco': 'Gencos'
+            # '24:00': '00:00',  # For future reference: Uncomment to rename '24:00' to '00:00'
+            'Genco': 'Gencos'
         }, inplace=True)
 
-        # Validate columns for unpivoting
+        # Identify hourly columns for unpivoting
         hour_columns = [col for col in hourly_data_df.columns if ':' in col]
         if not hour_columns:
             raise ValueError("No hourly columns found for unpivoting!")
 
-        # Unpivot the DataFrame
+        # Unpivot the DataFrame to convert hour columns into rows
         unpivoted_df = pd.melt(
             hourly_data_df,
             id_vars=['Date', 'Gencos'],
@@ -91,13 +93,17 @@ def scrape_and_process_data(target_date):
             value_name='EnergyGeneratedMWh'
         )
 
-        # Final cleanup
+        # Final cleanup: Convert energy values to numeric and drop any invalid entries
         unpivoted_df['EnergyGeneratedMWh'] = pd.to_numeric(unpivoted_df['EnergyGeneratedMWh'], errors='coerce')
         unpivoted_df.dropna(subset=['EnergyGeneratedMWh'], inplace=True)
 
-        # **** New Change: Filter to include only data for the target Nigeria hour ****
-        # target_date is assumed to be in Nigeria local time.
+        # Adjust the target hour:
+        # The target_date is in Nigeria local time. If it's midnight ("00:00"), the source data is labeled as "24:00"
         target_hour = target_date.strftime("%H:00")
+        if target_hour == "00:00":
+            target_hour = "24:00"
+
+        # Filter the DataFrame to include only data for the target hour
         unpivoted_df = unpivoted_df[unpivoted_df['Hour'] == target_hour]
 
         print("Data processing completed successfully.")
@@ -117,7 +123,7 @@ def load_to_database(df):
         db_user = "jksutauf_martins"
         db_password = "12345678"
 
-        # Create a MySQL connection
+        # Establish a MySQL connection
         db_connection = pymysql.connect(
             host=db_host,
             port=db_port,
@@ -126,15 +132,16 @@ def load_to_database(df):
             password=db_password
         )
 
-        # Create a cursor
+        # Create a cursor for executing queries
         cursor = db_connection.cursor()
 
-        # Prepare the insert statement
+        # Prepare the SQL insert statement
         sql = "INSERT INTO combined_hourly_energy_generated_mwh (Date, Hour, Gencos, EnergyGeneratedMWh) VALUES (%s, %s, %s, %s)"
 
+        # Ensure DataFrame columns are in the correct order
         df = df[['Date', 'Hour', 'Gencos', 'EnergyGeneratedMWh']]
 
-        # Create a list of tuples from the dataframe records
+        # Create a list of tuples from the DataFrame records
         data_tuples = df.to_records(index=False).tolist()
         print("DATA TUPLES", data_tuples)
 
@@ -155,7 +162,7 @@ def load_to_database(df):
 def main():
     try:
         # GitHub Actions runs in UTC.
-        # Convert current UTC to Nigeria local time (UTC+1), then subtract one hour and round down.
+        # Convert current UTC to Nigeria local time (UTC+1), subtract one hour, and round down.
         now_utc = datetime.utcnow()
         now_nigeria = now_utc + timedelta(hours=1)
         target_nigeria = now_nigeria - timedelta(hours=1)
