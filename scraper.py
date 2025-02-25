@@ -115,6 +115,7 @@ def load_to_database_delete_insert(df):
     For each row, delete existing row(s) in the DB for (Date, Hour, Gencos),
     then insert a fresh record. This ensures any changes are reflected,
     without requiring a unique key constraint.
+    It will also print the old rows for comparison.
     """
     print("Starting database upload (delete+insert mode)...")
     try:
@@ -135,13 +136,17 @@ def load_to_database_delete_insert(df):
         cursor = db_connection.cursor()
 
         # We'll do everything in a single transaction
-        # so that partial changes don't persist if there's an error.
         cursor.execute("BEGIN")
 
         # Make sure df columns are in the correct order
         df = df[['Date', 'Hour', 'Gencos', 'EnergyGeneratedMWh']]
 
         # Prepare SQL statements
+        sql_select = """
+            SELECT Date, Hour, Gencos, EnergyGeneratedMWh
+            FROM combined_hourly_energy_generated_mwh
+            WHERE Date=%s AND Hour=%s
+        """
         sql_delete = """
             DELETE FROM combined_hourly_energy_generated_mwh
             WHERE Date=%s AND Hour=%s AND Gencos=%s
@@ -151,22 +156,42 @@ def load_to_database_delete_insert(df):
             VALUES (%s, %s, %s, %s)
         """
 
-        # Convert DataFrame rows to a list of tuples
-        data_tuples = df.to_records(index=False).tolist()
+        # We group by (Date, Hour) in the new data just so we can fetch old rows at once
+        grouped = df.groupby(["Date", "Hour"])
 
-        for record in data_tuples:
-            date_val, hour_val, genco_val, energy_val = record
+        for (date_val, hour_val), group_df in grouped:
+            # 1) Print old rows from DB for this date/hour
+            cursor.execute(sql_select, (date_val, hour_val))
+            old_rows = cursor.fetchall()
+            if old_rows:
+                print(f"\n[DEBUG] Old rows in DB for {date_val} {hour_val}:")
+                for row in old_rows:
+                    print("   ", row)
+            else:
+                print(f"\n[DEBUG] No existing rows in DB for {date_val} {hour_val}.")
 
-            # 1) Delete old row(s)
-            cursor.execute(sql_delete, (date_val, hour_val, genco_val))
+            # 2) Print new rows that we are about to insert
+            print(f"[DEBUG] New rows to insert for {date_val} {hour_val}:")
+            for idx, new_row in group_df.iterrows():
+                print("   ", (new_row["Date"], new_row["Hour"], new_row["Gencos"], new_row["EnergyGeneratedMWh"]))
 
-            # 2) Insert fresh row
-            cursor.execute(sql_insert, (date_val, hour_val, genco_val, energy_val))
+            # 3) For each record in this group, delete the old row(s) and insert fresh
+            for idx, row_data in group_df.iterrows():
+                date_val_2 = row_data["Date"]
+                hour_val_2 = row_data["Hour"]
+                genco_val_2 = row_data["Gencos"]
+                energy_val_2 = row_data["EnergyGeneratedMWh"]
+
+                # Delete old row(s)
+                cursor.execute(sql_delete, (date_val_2, hour_val_2, genco_val_2))
+
+                # Insert fresh row
+                cursor.execute(sql_insert, (date_val_2, hour_val_2, genco_val_2, energy_val_2))
 
         db_connection.commit()
         db_connection.close()
 
-        print("Delete+Insert transaction completed successfully.")
+        print("Delete+Insert transaction completed successfully.\n")
 
     except Exception as e:
         print(f"An error occurred while uploading to the database: {e}")
@@ -184,7 +209,9 @@ def main():
 
         # 2) Re-check the previous 3 hours plus the new hour
         #    That means offsets of -2, -1, 0, +1 from the base.
-        hours_to_revalidate = range(-3, 2)  # [-2, -1, 0, 1]
+        #    If you only want EXACTLY the last 3 plus current (i.e. T−3..T),
+        #    change range(-3,1). For demonstration, we do -3..+1 below:
+        hours_to_revalidate = range(-3, 2)  # -3, -2, -1, 0, +1
 
         for offset in hours_to_revalidate:
             check_hour = target_nigeria + timedelta(hours=offset)
