@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import pymysql
 
 def scrape_and_process_data(target_date):
-    print(f"Starting data scraping process for {target_date.strftime('%Y-%m-%d')}...")
+    print(f"Starting data scraping process for {target_date.strftime('%Y-%m-%d %H:%M')}...")
 
     try:
         with sync_playwright() as p:
@@ -51,14 +51,15 @@ def scrape_and_process_data(target_date):
                 cols = row.query_selector_all('td')
                 if cols:
                     row_data = [col.text_content().strip() for col in cols]
-                    row_data.insert(0, target_date.strftime('%Y-%m-%d'))  # Prepend the Date column
+                    # Prepend the Date column (YYYY-MM-DD)
+                    row_data.insert(0, target_date.strftime('%Y-%m-%d'))
                     all_data.append(row_data)
 
             print(f"Scraped data for {target_date.strftime('%Y-%m-%d')}")
             browser.close()
 
         # Convert to DataFrame
-        if headers[0] == '':
+        if headers and headers[0] == '':
             headers[0] = 'Index'  # Handle potential empty header column
         columns = ['Date'] + headers
         hourly_data_df = pd.DataFrame(all_data, columns=columns)
@@ -66,16 +67,21 @@ def scrape_and_process_data(target_date):
         print("Starting data processing...")
 
         # Validate and clean the DataFrame
-        hourly_data_df = hourly_data_df.replace(r'^\s*$', pd.NA, regex=True)  # Replace empty strings with NaN
-        hourly_data_df = hourly_data_df.dropna(subset=['Genco'])  # Drop rows with missing Genco data
-        hourly_data_df = hourly_data_df[hourly_data_df['Genco'] != 'zTOTAL']  # Remove rows where Genco equals zTOTAL
+        # Replace empty strings with NaN
+        hourly_data_df = hourly_data_df.replace(r'^\s*$', pd.NA, regex=True)
+
+        # Drop rows without a valid Genco
+        hourly_data_df = hourly_data_df.dropna(subset=['Genco'])
+
+        # Remove rows where Genco == 'zTOTAL'
+        hourly_data_df = hourly_data_df[hourly_data_df['Genco'] != 'zTOTAL']
 
         # Remove unnecessary columns
         hourly_data_df = hourly_data_df.drop(columns=['#', 'TotalGeneration'], errors='ignore')
 
-        # Rename columns (note: the renaming of '24:00' to '00:00' is commented out)
+        # Rename columns (note: do NOT rename '24:00' to '00:00')
         hourly_data_df.rename(columns={
-            # '24:00': '00:00',  # For future reference: Uncomment to rename '24:00' to '00:00'
+            # '24:00': '00:00',  # Keep this commented out to preserve "24:00"
             'Genco': 'Gencos'
         }, inplace=True)
 
@@ -93,28 +99,24 @@ def scrape_and_process_data(target_date):
             value_name='EnergyGeneratedMWh'
         )
 
-        # Final cleanup: Convert energy values to numeric and drop any invalid entries
+        # Convert energy to numeric, drop invalid
         unpivoted_df['EnergyGeneratedMWh'] = pd.to_numeric(unpivoted_df['EnergyGeneratedMWh'], errors='coerce')
         unpivoted_df.dropna(subset=['EnergyGeneratedMWh'], inplace=True)
 
-        # Adjust the target hour:
-        # The target_date is in Nigeria local time. If it's midnight ("00:00"), the source data is labeled as "24:00"
-        target_hour = target_date.strftime("%H:00")
-        if target_hour == "00:00":
-            target_hour = "24:00"
-
-        # Filter the DataFrame to include only data for the target hour
-        unpivoted_df = unpivoted_df[unpivoted_df['Hour'] == target_hour]
-
-        print("Data processing completed successfully.")
         return unpivoted_df
 
     except Exception as e:
         print(f"Scraping process failed: {e}")
         return None
 
-def load_to_database(df):
-    print("Starting database upload...")
+
+def load_to_database_delete_insert(df):
+    """
+    For each row, delete existing row(s) in the DB for (Date, Hour, Gencos),
+    then insert a fresh record. This ensures any changes are reflected,
+    without requiring a unique key constraint.
+    """
+    print("Starting database upload (delete+insert mode)...")
     try:
         # Database connection details
         db_host = "148.251.246.72"
@@ -123,7 +125,6 @@ def load_to_database(df):
         db_user = "jksutauf_martins"
         db_password = "12345678"
 
-        # Establish a MySQL connection
         db_connection = pymysql.connect(
             host=db_host,
             port=db_port,
@@ -131,51 +132,86 @@ def load_to_database(df):
             user=db_user,
             password=db_password
         )
-
-        # Create a cursor for executing queries
         cursor = db_connection.cursor()
 
-        # Prepare the SQL insert statement
-        sql = "INSERT INTO combined_hourly_energy_generated_mwh (Date, Hour, Gencos, EnergyGeneratedMWh) VALUES (%s, %s, %s, %s)"
+        # We'll do everything in a single transaction
+        # so that partial changes don't persist if there's an error.
+        cursor.execute("BEGIN")
 
-        # Ensure DataFrame columns are in the correct order
+        # Make sure df columns are in the correct order
         df = df[['Date', 'Hour', 'Gencos', 'EnergyGeneratedMWh']]
 
-        # Create a list of tuples from the DataFrame records
+        # Prepare SQL statements
+        sql_delete = """
+            DELETE FROM combined_hourly_energy_generated_mwh
+            WHERE Date=%s AND Hour=%s AND Gencos=%s
+        """
+        sql_insert = """
+            INSERT INTO combined_hourly_energy_generated_mwh (Date, Hour, Gencos, EnergyGeneratedMWh)
+            VALUES (%s, %s, %s, %s)
+        """
+
+        # Convert DataFrame rows to a list of tuples
         data_tuples = df.to_records(index=False).tolist()
-        print("DATA TUPLES", data_tuples)
 
-        # Execute the SQL command in batches
-        batch_size = 1000
-        for i in range(0, len(data_tuples), batch_size):
-            cursor.executemany(sql, data_tuples[i:i+batch_size])
+        for record in data_tuples:
+            date_val, hour_val, genco_val, energy_val = record
 
-        # Commit the changes and close the connection
+            # 1) Delete old row(s)
+            cursor.execute(sql_delete, (date_val, hour_val, genco_val))
+
+            # 2) Insert fresh row
+            cursor.execute(sql_insert, (date_val, hour_val, genco_val, energy_val))
+
         db_connection.commit()
         db_connection.close()
 
-        print("Data inserted successfully into the database.")
+        print("Delete+Insert transaction completed successfully.")
 
     except Exception as e:
         print(f"An error occurred while uploading to the database: {e}")
 
+
 def main():
     try:
-        # GitHub Actions runs in UTC.
-        # Convert current UTC to Nigeria local time (UTC+1), subtract one hour, and round down.
+        # 1) Determine 'target_nigeria' as "Now in Nigeria (UTC+1) minus 1 hour".
         now_utc = datetime.utcnow()
         now_nigeria = now_utc + timedelta(hours=1)
+        # The "hour to pull" is now_nigeria - 1 hour
         target_nigeria = now_nigeria - timedelta(hours=1)
         target_nigeria = target_nigeria.replace(minute=0, second=0, microsecond=0)
-        print("Target scraping date and hour (Nigeria time):", target_nigeria.strftime("%Y-%m-%d %H:%M"))
-        
-        final_df = scrape_and_process_data(target_nigeria)
+        print("Base target hour (Nigeria time):", target_nigeria.strftime("%Y-%m-%d %H:%M"))
 
-        if final_df is not None:
-            load_to_database(final_df)
-            print("ETL process completed successfully.")
-        else:
-            print("Data scraping failed. Aborting process.")
+        # 2) Re-check the previous 3 hours plus the new hour
+        #    That means offsets of -2, -1, 0, +1 from the base.
+        hours_to_revalidate = range(-3, 2)  # [-2, -1, 0, 1]
+
+        for offset in hours_to_revalidate:
+            check_hour = target_nigeria + timedelta(hours=offset)
+            entire_day_df = scrape_and_process_data(check_hour)
+            if entire_day_df is None:
+                print(f"Failed scraping day for {check_hour.date()}, skipping offset={offset}...")
+                continue
+
+            # Format hour "HH:00", if midnight then "24:00"
+            target_hour_str = check_hour.strftime("%H:00")
+            if target_hour_str == "00:00":
+                target_hour_str = "24:00"
+
+            # Filter for exactly that hour
+            one_hour_df = entire_day_df[
+                (entire_day_df['Date'] == check_hour.strftime('%Y-%m-%d')) &
+                (entire_day_df['Hour'] == target_hour_str)
+            ].copy()
+
+            if one_hour_df.empty:
+                print(f"No data found for hour={target_hour_str} on {check_hour.strftime('%Y-%m-%d')}.")
+                continue
+
+            # Load to DB via delete+insert
+            load_to_database_delete_insert(one_hour_df)
+
+        print("ETL process with revalidation completed successfully.")
 
     except Exception as e:
         print(f"An error occurred in the main process: {e}")
