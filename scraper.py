@@ -197,20 +197,45 @@ def load_to_database_delete_insert(df):
         print(f"An error occurred while uploading to the database: {e}")
 
 
+def revalidate_entire_previous_day():
+    """
+    Once a day (right after midnight in Nigeria), we re-scrape the entire previous day's 24 hours
+    to ensure no hour got missed or changed. This covers hour 24 specifically.
+    """
+    # We'll define the 'previous day' as 'today in Nigeria minus 1 day'
+    now_utc = datetime.utcnow()
+    now_nigeria = now_utc + timedelta(hours=1)
+    previous_day_nigeria = (now_nigeria - timedelta(days=1)).replace(hour=12, minute=0, second=0, microsecond=0)
+    # (We pick hour=12 so the scrape picks any time in that day.)
+
+    print(f"\nRevalidating entire previous day: {previous_day_nigeria.strftime('%Y-%m-%d')}")
+    entire_day_df = scrape_and_process_data(previous_day_nigeria)
+    if entire_day_df is None:
+        print("Failed scraping the entire previous day.")
+        return
+
+    # Now we do delete+insert for all 24 hours
+    load_to_database_delete_insert(entire_day_df)
+    print("Finished revalidating entire previous day.\n")
+
+
 def main():
     try:
         # 1) Determine 'target_nigeria' as "Now in Nigeria (UTC+1) minus 1 hour".
         now_utc = datetime.utcnow()
         now_nigeria = now_utc + timedelta(hours=1)
-        # The "hour to pull" is now_nigeria - 1 hour
         target_nigeria = now_nigeria - timedelta(hours=1)
         target_nigeria = target_nigeria.replace(minute=0, second=0, microsecond=0)
         print("Base target hour (Nigeria time):", target_nigeria.strftime("%Y-%m-%d %H:%M"))
 
-        # 2) Re-check the previous 3 hours plus the new hour
-        #    That means offsets of -2, -1, 0, +1 from the base.
-        #    If you only want EXACTLY the last 3 plus current (i.e. T−3..T),
-        #    change range(-3,1). For demonstration, we do -3..+1 below:
+        # 2) If the local Nigeria time's hour is "00" or "01", let's re-validate entire previous day.
+        #    That way, we always capture hour 24 from yesterday. You can adjust the threshold hour as needed.
+        if now_nigeria.hour in [0, 1]:
+            revalidate_entire_previous_day()
+
+        # 3) Re-check the previous 3 hours plus the new hour for the *current day* (or day that includes target_nigeria).
+        #    That means offsets of -2, -1, 0, +1 from the base. If you only want EXACTLY the last 3 plus current,
+        #    do range(-3,1).
         hours_to_revalidate = range(-3, 2)  # -3, -2, -1, 0, +1
 
         for offset in hours_to_revalidate:
