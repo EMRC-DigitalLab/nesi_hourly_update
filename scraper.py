@@ -228,9 +228,8 @@ def main():
         target_nigeria = target_nigeria.replace(minute=0, second=0, microsecond=0)
         print("Base target hour (Nigeria time):", target_nigeria.strftime("%Y-%m-%d %H:%M"))
 
-        # 2) If the local Nigeria time's hour is "00" or "01", let's re-validate entire previous day.
-        #    That way, we always capture hour 24 from yesterday. You can adjust the threshold hour as needed.
-        if now_nigeria.hour in [0, 1]:
+        # 2) If the local Nigeria time's hour is "00", "01", or "06", re-validate entire previous day.
+        if now_nigeria.hour in [0, 1, 6]:  # Added 6 AM check
             revalidate_entire_previous_day()
 
         # 3) Re-check the previous 3 hours plus the new hour for the *current day* (or day that includes target_nigeria).
