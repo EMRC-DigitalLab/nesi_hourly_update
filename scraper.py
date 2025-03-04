@@ -228,11 +228,16 @@ def main():
         target_nigeria = target_nigeria.replace(minute=0, second=0, microsecond=0)
         print("Base target hour (Nigeria time):", target_nigeria.strftime("%Y-%m-%d %H:%M"))
 
-        # 2) If the local Nigeria time's hour is "00", "01", or "06", re-validate entire previous day.
-        if now_nigeria.hour in [0, 1, 6]:  # Added 6 AM check
+        # 2) If the local Nigeria time's hour is "00" or "01", re-validate entire previous day.
+        if now_nigeria.hour in [0, 1]:
             revalidate_entire_previous_day()
 
-        # 3) Re-check the previous 3 hours plus the new hour for the *current day* (or day that includes target_nigeria).
+        # 2A) ADDITIONAL REVALIDATION at 6 AM:
+        # This extra pass re-scrapes the entire previous day once more, capturing any late updates.
+        if now_nigeria.hour == 6:
+            revalidate_entire_previous_day()
+
+        # 3) Re-check the previous 3 hours plus the new hour for the current day (or day that includes target_nigeria).
         #    That means offsets of -2, -1, 0, +1 from the base. If you only want EXACTLY the last 3 plus current,
         #    do range(-3,1).
         hours_to_revalidate = range(-3, 2)  # -3, -2, -1, 0, +1
@@ -266,6 +271,7 @@ def main():
 
     except Exception as e:
         print(f"An error occurred in the main process: {e}")
+
 
 if __name__ == "__main__":
     main()
