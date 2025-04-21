@@ -1,8 +1,9 @@
+# .github/workflows/scrape_data.yaml
 name: Scrape Yesterday's Energy Data
 
 on:
   schedule:
-    - cron: '0 * * * *'      # every hour, on the hour
+    - cron: '0 * * * *'      # every hour on the hour
   workflow_dispatch:
 
 jobs:
@@ -33,16 +34,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Install Playwright & Browsers
+      - name: Install Playwright browsers
         run: |
-          python -m pip install --upgrade pip playwright
-          # installs Chromium into ~/.cache/ms-playwright
+          # requirements.txt already has playwright,
+          # so just install its browsers into the default cache.
           python -m playwright install chromium
 
       - name: Verify Playwright cache
         run: |
-          echo "Playwright browser cache:"
-          ls -la $HOME/.cache/ms-playwright
+          echo "Contents of Playwright cache directory:"
+          ls -la "$HOME/.cache/ms-playwright"
 
-      - name: Run Scraper
-        run: python scraper.py
+      - name: Run scraper
+        run: |
+          python scraper.py
