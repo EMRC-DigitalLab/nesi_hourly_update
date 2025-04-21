@@ -1,50 +1,48 @@
 name: Scrape Yesterday's Energy Data
+
 on:
   schedule:
-    - cron: "0 * * * *"
+    - cron: '0 * * * *'      # every hour, on the hour
   workflow_dispatch:
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Set up Python
+      - name: Set up Python 3.9
         uses: actions/setup-python@v3
         with:
-          python-version: "3.9"
+          python-version: '3.9'
 
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget unzip libglib2.0-0 libnss3 libx11-6 libxrandr2 libxss1 libatk1.0-0 libatk-bridge2.0-0 libx11-xcb1 libxcb-dri3-0 libdrm2 libgbm1 libpango-1.0-0 libcairo2 libgtk-3-0
+          sudo apt-get install -y \
+            wget unzip \
+            libglib2.0-0 libnss3 libx11-6 libxrandr2 libxss1 \
+            libatk1.0-0 libatk-bridge2.0-0 libx11-xcb1 \
+            libxcb-dri3-0 libdrm2 libgbm1 \
+            libpango-1.0-0 libcairo2 libgtk-3-0
 
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Install Playwright and Browsers
+      - name: Install Playwright & Browsers
         run: |
-          python -m pip install playwright
-          PLAYWRIGHT_BROWSERS_PATH=0 python -m playwright install chromium
+          python -m pip install --upgrade pip playwright
+          # installs Chromium into ~/.cache/ms-playwright
+          python -m playwright install chromium
 
-      - name: Debug Playwright Installation Path
+      - name: Verify Playwright cache
         run: |
-          find / -type d -name ".local-browsers" 2>/dev/null || true
-
-      - name: Verify Playwright Browsers
-        run: |
-          ls -la /opt/hostedtoolcache/Python/3.9.21/x64/lib/python3.9/site-packages/playwright/driver/package/.local-browsers/
-
-      - name: Verify Playwright Installation
-        run: |
-          python -c "from playwright.sync_api import sync_playwright; p = sync_playwright().start(); p.stop()"
+          echo "Playwright browser cache:"
+          ls -la $HOME/.cache/ms-playwright
 
       - name: Run Scraper
-        run: |
-          python scraper.py
-        env:
-          PLAYWRIGHT_BROWSERS_PATH: 0
+        run: python scraper.py
