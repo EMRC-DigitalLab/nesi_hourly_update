@@ -12,43 +12,42 @@ def scrape_and_process_data(target_date):
             page = browser.new_page()
             page.goto('https://www.niggrid.org/', timeout=120000)
 
-            # Click on the "Generate Hourly Data" button
-            hourly_data_button = page.wait_for_selector('#sideContent_loginVWShortCuts_lnkGencoProfile2')
-            hourly_data_button.click()
+            # Click on the "Genco Performance" link
+            page.locator("a[href*='/Analytics/GENCOGenerationPerformances']").click()
+            page.wait_for_load_state('networkidle')
+
+            # Click on the "Genco Generation Readings" link
+            page.locator("a[href*='/GenerationProfile2']").click()
+            page.wait_for_load_state('networkidle')
 
             # Open the calendar
-            calendar_element = page.wait_for_selector('#MainContent_txtReadingDate')
-            calendar_element.click()
+            page.locator('#MainContent_txtReadingDate').click()
 
             # Select the year
-            select_year = page.query_selector('//*[@id="ui-datepicker-div"]/div/div/select[2]')
-            select_year.select_option(str(target_date.year))
+            page.locator("xpath=//*[@id='ui-datepicker-div']/div/div/select[2]") \
+                .select_option(str(target_date.year))
 
             # Select the month (note: month is zero-indexed in the UI)
-            select_month = page.query_selector('//*[@id="ui-datepicker-div"]/div/div/select[1]')
-            select_month.select_option(str(target_date.month - 1))
+            page.locator("xpath=//*[@id='ui-datepicker-div']/div/div/select[1]") \
+                .select_option(str(target_date.month - 1))
 
             # Select the day
-            day_element = page.wait_for_selector(
-                f'//*[@id="ui-datepicker-div"]/table/tbody/tr/td/a[text()="{target_date.day}"]'
-            )
-            day_element.click()
+            page.locator(f"xpath=//*[@id='ui-datepicker-div']/table/tbody/tr/td/a[text()='{target_date.day}']") \
+                .click()
 
             # Click the "Generate Readings" button
-            generate_button = page.wait_for_selector('#MainContent_btnGetReadings')
-            generate_button.click()
+            page.locator('#MainContent_btnGetReadings').click()
 
             # Wait for the data to load
             page.wait_for_timeout(8000)
 
             # Extract table headers
-            headers = [header.text_content().strip() for header in page.query_selector_all('th')]
+            headers = [header.text_content().strip() for header in page.locator('th').all()]
 
             # Extract data rows
-            table_rows = page.query_selector_all('tr')
             all_data = []
-            for row in table_rows:
-                cols = row.query_selector_all('td')
+            for row in page.locator('tr').all():
+                cols = row.locator('td').all()
                 if cols:
                     row_data = [col.text_content().strip() for col in cols]
                     # Prepend the Date column (YYYY-MM-DD)
