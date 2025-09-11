@@ -1,15 +1,15 @@
 # .github/workflows/scrape_data.yaml
-name: Scrape Yesterday's Energy Data
+name: Scrape Energy + DISCO Load
 
 on:
   schedule:
-    - cron: '0 * * * *'      # every hour on the hour
+    - cron: "0 * * * *" # every hour on the hour (UTC)
   workflow_dispatch:
 
 jobs:
-  scrape:
+  genco:
+    name: GENCO scraper (scraper.py)
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -17,7 +17,7 @@ jobs:
       - name: Set up Python 3.9
         uses: actions/setup-python@v3
         with:
-          python-version: '3.9'
+          python-version: "3.9"
 
       - name: Install system dependencies
         run: |
@@ -35,16 +35,40 @@ jobs:
           pip install -r requirements.txt
 
       - name: Install Playwright browsers
-        run: |
-          # requirements.txt already has playwright,
-          # so just install its browsers into the default cache.
-          python -m playwright install chromium
+        run: python -m playwright install chromium
 
-      - name: Verify Playwright cache
-        run: |
-          echo "Contents of Playwright cache directory:"
-          ls -la "$HOME/.cache/ms-playwright"
+      - name: Run GENCO scraper
+        run: python scraper.py
 
-      - name: Run scraper
+  disco:
+    name: DISCO load scraper (discoloadscraper.py)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v3
+        with:
+          python-version: "3.9"
+
+      - name: Install system dependencies
         run: |
-          python scraper.py
+          sudo apt-get update
+          sudo apt-get install -y \
+            wget unzip \
+            libglib2.0-0 libnss3 libx11-6 libxrandr2 libxss1 \
+            libatk1.0-0 libatk-bridge2.0-0 libx11-xcb1 \
+            libxcb-dri3-0 libdrm2 libgbm1 \
+            libpango-1.0-0 libcairo2 libgtk-3-0
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        run: python -m playwright install chromium
+
+      - name: Run DISCO load scraper
+        run: python discoloadscraper.py
