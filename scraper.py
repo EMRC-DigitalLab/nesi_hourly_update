@@ -3,14 +3,23 @@ from playwright.sync_api import sync_playwright
 from datetime import datetime, timedelta
 import pymysql
 
+
 def scrape_and_process_data(target_date):
     print(f"Starting data scraping process for {target_date.strftime('%Y-%m-%d %H:%M')}...")
 
     try:
         with sync_playwright() as p:
+            # ---------------------------------------------------------------
+            # SSL FIX: ignore_https_errors=True bypasses the expired
+            # certificate warning on www.niggrid.org (NET::ERR_CERT_DATE_INVALID)
+            # This is the equivalent of clicking "Advanced → Proceed anyway"
+            # ---------------------------------------------------------------
             browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
+            context = browser.new_context(ignore_https_errors=True)
+            page = context.new_page()
+
             page.goto('https://www.niggrid.org/', timeout=120000)
+            page.wait_for_load_state('networkidle')
 
             # Click on the "Genco Performance" link
             page.locator("a[href*='/Analytics/GENCOGenerationPerformances']").click()
@@ -55,6 +64,9 @@ def scrape_and_process_data(target_date):
                     all_data.append(row_data)
 
             print(f"Scraped data for {target_date.strftime('%Y-%m-%d')}")
+
+            # Close context before browser
+            context.close()
             browser.close()
 
         # Convert to DataFrame
