@@ -20,8 +20,14 @@ def scrape_disco_load_profile():
     try:
         with sync_playwright() as p:
             # Launch browser
+            # ---------------------------------------------------------------
+            # SSL FIX: ignore_https_errors=True bypasses the expired
+            # certificate warning on www.niggrid.org (NET::ERR_CERT_DATE_INVALID)
+            # This is the equivalent of clicking "Advanced → Proceed anyway"
+            # ---------------------------------------------------------------
             browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
+            context = browser.new_context(ignore_https_errors=True)
+            page = context.new_page()
             
             # Set a reasonable timeout and user agent
             page.set_default_timeout(120000)
@@ -106,7 +112,9 @@ def scrape_disco_load_profile():
                             logging.info(f"Disco element: '{text_content}'")
                     except Exception:
                         continue
-            
+
+            # Close context before browser
+            context.close()
             browser.close()
             logging.info(f"Scraping completed. Found {len(data_rows)} records.")
             
