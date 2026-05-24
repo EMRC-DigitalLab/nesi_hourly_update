@@ -2,290 +2,287 @@ import pandas as pd
 from playwright.sync_api import sync_playwright
 from datetime import datetime, timedelta
 import pymysql
-import logging
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
 
-def scrape_disco_load_profile():
-    """
-    Scrape DISCO Load Profile data from niggrid.org using Playwright.
-    Returns a DataFrame with columns: Date, Company, Load_Allocation_MW
-    """
-    logging.info("Starting DISCO Load Profile scraping...")
-    
+def scrape_and_process_data(target_date):
+    print(f"Starting data scraping process for {target_date.strftime('%Y-%m-%d %H:%M')}...")
+
     try:
         with sync_playwright() as p:
-            # Launch browser
+            # ---------------------------------------------------------------
+            # SSL FIX: ignore_https_errors=True bypasses the expired
+            # certificate warning on www.niggrid.org (NET::ERR_CERT_DATE_INVALID)
+            # This is the equivalent of clicking "Advanced → Proceed anyway"
+            # ---------------------------------------------------------------
             browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            
-            # Set a reasonable timeout and user agent
-            page.set_default_timeout(120000)
-            page.set_extra_http_headers({
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            })
-            
-            # Navigate directly to DISCO Load Profile page
-            logging.info("Navigating to DISCO Load Profile page...")
-            page.goto('https://niggrid.org/discoloadprofile', timeout=120000)
+            context = browser.new_context(ignore_https_errors=True)
+            page = context.new_page()
+
+            page.goto('https://www.niggrid.org/', timeout=120000)
             page.wait_for_load_state('networkidle')
-            
-            # Wait a bit for dynamic content to load
-            page.wait_for_timeout(5000)
-            
-            logging.info("Page loaded successfully, extracting data...")
-            
-            # Extract current timestamp
-            current_datetime = datetime.utcnow() + timedelta(hours=1)  # Nigeria time (UTC+1)
-            
-            # Extract data from the page
-            data_rows = []
-            
-            # Strategy 1: Look for table rows with company and load data
-            table_rows = page.locator('tr').all()
-            logging.info(f"Found {len(table_rows)} table rows")
-            
-            for i, row in enumerate(table_rows):
-                try:
-                    cells = row.locator('td, th').all()
-                    if len(cells) >= 2:
-                        company_text = cells[0].text_content().strip()
-                        load_text = cells[1].text_content().strip()
-                        
-                        logging.info(f"Row {i}: '{company_text}' | '{load_text}'")
-                        
-                        # Check if this looks like a data row (contains "Disco" and excludes headers)
-                        if (company_text and load_text and 
-                            'disco' in company_text.lower() and
-                            company_text.lower() not in ['company', 'distribution company'] and
-                            load_text.lower() != 'load allocation (mw)'):
-                            
-                            try:
-                                # Clean the load value and convert to float
-                                load_clean = (load_text.replace(',', '')
-                                                      .replace('MW', '')
-                                                      .replace('(', '')
-                                                      .replace(')', '')
-                                                      .strip())
-                                load_value = float(load_clean)
-                                
-                                data_rows.append({
-                                    'Date': current_datetime,
-                                    'Company': company_text,
-                                    'Load_Allocation_MW': load_value
-                                })
-                                logging.info(f"Added: {company_text} - {load_value} MW")
-                                
-                            except ValueError as e:
-                                logging.warning(f"Could not parse load value '{load_text}' for {company_text}: {e}")
-                
-                except Exception as e:
-                    logging.warning(f"Error processing row {i}: {e}")
-                    continue
-            
-            # Strategy 2: If no table data found, try alternative selectors
-            if not data_rows:
-                logging.info("No table data found, trying alternative parsing...")
-                
-                # Look for specific patterns or divs containing the data
-                page_content = page.content()
-                logging.info(f"Page content length: {len(page_content)} characters")
-                
-                # Try to find elements with company names
-                disco_elements = page.locator('text=/.*disco.*/i').all()
-                logging.info(f"Found {len(disco_elements)} elements containing 'disco'")
-                
-                for element in disco_elements[:20]:  # Limit to avoid too much noise
-                    try:
-                        text_content = element.text_content().strip()
-                        if text_content and len(text_content) < 100:  # Reasonable length for company names
-                            logging.info(f"Disco element: '{text_content}'")
-                    except Exception:
-                        continue
-            
+
+            # Click on the "Genco Performance" link
+            page.locator("a[href*='/Analytics/GENCOGenerationPerformances']").click()
+            page.wait_for_load_state('networkidle')
+
+            # Click on the "Genco Generation Readings" link
+            page.locator("a[href*='/GenerationProfile2']").click()
+            page.wait_for_load_state('networkidle')
+
+            # Open the calendar
+            page.locator('#MainContent_txtReadingDate').click()
+
+            # Select the year
+            page.locator("xpath=//*[@id='ui-datepicker-div']/div/div/select[2]") \
+                .select_option(str(target_date.year))
+
+            # Select the month (note: month is zero-indexed in the UI)
+            page.locator("xpath=//*[@id='ui-datepicker-div']/div/div/select[1]") \
+                .select_option(str(target_date.month - 1))
+
+            # Select the day
+            page.locator(f"xpath=//*[@id='ui-datepicker-div']/table/tbody/tr/td/a[text()='{target_date.day}']") \
+                .click()
+
+            # Click the "Generate Readings" button
+            page.locator('#MainContent_btnGetReadings').click()
+
+            # Wait for the data to load
+            page.wait_for_timeout(8000)
+
+            # Extract table headers
+            headers = [header.text_content().strip() for header in page.locator('th').all()]
+
+            # Extract data rows
+            all_data = []
+            for row in page.locator('tr').all():
+                cols = row.locator('td').all()
+                if cols:
+                    row_data = [col.text_content().strip() for col in cols]
+                    # Prepend the Date column (YYYY-MM-DD)
+                    row_data.insert(0, target_date.strftime('%Y-%m-%d'))
+                    all_data.append(row_data)
+
+            print(f"Scraped data for {target_date.strftime('%Y-%m-%d')}")
+
+            # Close context before browser
+            context.close()
             browser.close()
-            logging.info(f"Scraping completed. Found {len(data_rows)} records.")
-            
-            if not data_rows:
-                logging.warning("No data extracted from the page!")
-                return None
-            
-            return data_rows
-            
+
+        # Convert to DataFrame
+        if headers and headers[0] == '':
+            headers[0] = 'Index'  # Handle potential empty header column
+        columns = ['Date'] + headers
+        hourly_data_df = pd.DataFrame(all_data, columns=columns)
+
+        print("Starting data processing...")
+
+        # Validate and clean the DataFrame
+        # Replace empty strings with NaN
+        hourly_data_df = hourly_data_df.replace(r'^\s*$', pd.NA, regex=True)
+
+        # Drop rows without a valid Genco
+        hourly_data_df = hourly_data_df.dropna(subset=['Genco'])
+
+        # Remove rows where Genco == 'zTOTAL'
+        hourly_data_df = hourly_data_df[hourly_data_df['Genco'] != 'zTOTAL']
+
+        # Remove unnecessary columns
+        hourly_data_df = hourly_data_df.drop(columns=['#', 'TotalGeneration'], errors='ignore')
+
+        # Rename columns (note: do NOT rename '24:00' to '00:00')
+        hourly_data_df.rename(columns={
+            # '24:00': '00:00',  # Keep this commented out to preserve "24:00"
+            'Genco': 'Gencos'
+        }, inplace=True)
+
+        # Identify hourly columns for unpivoting
+        hour_columns = [col for col in hourly_data_df.columns if ':' in col]
+        if not hour_columns:
+            raise ValueError("No hourly columns found for unpivoting!")
+
+        # Unpivot the DataFrame to convert hour columns into rows
+        unpivoted_df = pd.melt(
+            hourly_data_df,
+            id_vars=['Date', 'Gencos'],
+            value_vars=hour_columns,
+            var_name='Hour',
+            value_name='EnergyGeneratedMWh'
+        )
+
+        # Convert energy to numeric, drop invalid
+        unpivoted_df['EnergyGeneratedMWh'] = pd.to_numeric(unpivoted_df['EnergyGeneratedMWh'], errors='coerce')
+        unpivoted_df.dropna(subset=['EnergyGeneratedMWh'], inplace=True)
+
+        return unpivoted_df
+
     except Exception as e:
-        logging.error(f"Error during scraping: {e}")
+        print(f"Scraping process failed: {e}")
         return None
 
-def load_to_database_delete_insert(data_rows):
+
+def load_to_database_delete_insert(df):
     """
-    Load DISCO Load Profile data to database using delete+insert pattern.
-    For each company, delete existing record for current datetime, then insert fresh record.
+    For each row, delete existing row(s) in the DB for (Date, Hour, Gencos),
+    then insert a fresh record. This ensures any changes are reflected,
+    without requiring a unique key constraint.
+    It will also print the old rows for comparison.
     """
-    if not data_rows:
-        logging.warning("No data to insert into database.")
-        return
-    
-    logging.info("Starting database upload (delete+insert mode)...")
-    
+    print("Starting database upload (delete+insert mode)...")
     try:
         # Database connection details
+        db_host = "148.251.246.72"
+        db_port = 3306
+        db_name = "jksutauf_nesidb"
+        db_user = "jksutauf_martins"
+        db_password = "12345678"
+
         db_connection = pymysql.connect(
-            host="148.251.246.72",
-            port=3306,
-            database="jksutauf_nesidb",
-            user="jksutauf_martins",
-            password="12345678"
+            host=db_host,
+            port=db_port,
+            database=db_name,
+            user=db_user,
+            password=db_password
         )
         cursor = db_connection.cursor()
-        
-        # Start transaction
+
+        # We'll do everything in a single transaction
         cursor.execute("BEGIN")
-        
-        # Get the date/hour for this batch (all records should have same timestamp)
-        sample_datetime = data_rows[0]['Date']
-        date_str = sample_datetime.strftime('%Y-%m-%d')
-        hour_str = sample_datetime.strftime('%H:00')
-        
-        # SQL statements
+
+        # Make sure df columns are in the correct order
+        df = df[['Date', 'Hour', 'Gencos', 'EnergyGeneratedMWh']]
+
+        # Prepare SQL statements
         sql_select = """
-            SELECT Date, Company, Load_Allocation_MW
-            FROM discoloadprofile
-            WHERE DATE(Date) = %s AND HOUR(Date) = %s
+            SELECT Date, Hour, Gencos, EnergyGeneratedMWh
+            FROM combined_hourly_energy_generated_mwh
+            WHERE Date=%s AND Hour=%s
         """
-        
         sql_delete = """
-            DELETE FROM discoloadprofile
-            WHERE DATE(Date) = %s AND HOUR(Date) = %s AND Company = %s
+            DELETE FROM combined_hourly_energy_generated_mwh
+            WHERE Date=%s AND Hour=%s AND Gencos=%s
         """
-        
         sql_insert = """
-            INSERT INTO discoloadprofile (Date, Company, Load_Allocation_MW)
-            VALUES (%s, %s, %s)
+            INSERT INTO combined_hourly_energy_generated_mwh (Date, Hour, Gencos, EnergyGeneratedMWh)
+            VALUES (%s, %s, %s, %s)
         """
-        
-        # Check and log existing data
-        cursor.execute(sql_select, (date_str, sample_datetime.hour))
-        existing_rows = cursor.fetchall()
-        
-        if existing_rows:
-            logging.info(f"Found {len(existing_rows)} existing rows for {date_str} {hour_str}:")
-            for row in existing_rows:
-                logging.info(f"  Existing: {row}")
-        else:
-            logging.info(f"No existing rows found for {date_str} {hour_str}")
-        
-        # Process each new record
-        logging.info(f"Processing {len(data_rows)} new records:")
-        for row_data in data_rows:
-            date_val = row_data['Date']
-            company_val = row_data['Company']
-            load_val = row_data['Load_Allocation_MW']
-            
-            logging.info(f"  New: ({date_val}, {company_val}, {load_val})")
-            
-            # Delete existing record for this company/date/hour
-            cursor.execute(sql_delete, (
-                date_val.strftime('%Y-%m-%d'),
-                date_val.hour,
-                company_val
-            ))
-            deleted_count = cursor.rowcount
-            if deleted_count > 0:
-                logging.info(f"    Deleted {deleted_count} existing record(s)")
-            
-            # Insert fresh record
-            cursor.execute(sql_insert, (date_val, company_val, load_val))
-            logging.info(f"    Inserted new record")
-        
-        # Commit transaction
+
+        # We group by (Date, Hour) in the new data just so we can fetch old rows at once
+        grouped = df.groupby(["Date", "Hour"])
+
+        for (date_val, hour_val), group_df in grouped:
+            # 1) Print old rows from DB for this date/hour
+            cursor.execute(sql_select, (date_val, hour_val))
+            old_rows = cursor.fetchall()
+            if old_rows:
+                print(f"\n[DEBUG] Old rows in DB for {date_val} {hour_val}:")
+                for row in old_rows:
+                    print("   ", row)
+            else:
+                print(f"\n[DEBUG] No existing rows in DB for {date_val} {hour_val}.")
+
+            # 2) Print new rows that we are about to insert
+            print(f"[DEBUG] New rows to insert for {date_val} {hour_val}:")
+            for idx, new_row in group_df.iterrows():
+                print("   ", (new_row["Date"], new_row["Hour"], new_row["Gencos"], new_row["EnergyGeneratedMWh"]))
+
+            # 3) For each record in this group, delete the old row(s) and insert fresh
+            for idx, row_data in group_df.iterrows():
+                date_val_2 = row_data["Date"]
+                hour_val_2 = row_data["Hour"]
+                genco_val_2 = row_data["Gencos"]
+                energy_val_2 = row_data["EnergyGeneratedMWh"]
+
+                # Delete old row(s)
+                cursor.execute(sql_delete, (date_val_2, hour_val_2, genco_val_2))
+
+                # Insert fresh row
+                cursor.execute(sql_insert, (date_val_2, hour_val_2, genco_val_2, energy_val_2))
+
         db_connection.commit()
         db_connection.close()
-        
-        logging.info("Delete+Insert transaction completed successfully.")
-        
-    except Exception as e:
-        logging.error(f"Database error: {e}")
-        try:
-            db_connection.rollback()
-            logging.info("Transaction rolled back due to error")
-        except:
-            pass
 
-def revalidate_previous_hours():
+        print("Delete+Insert transaction completed successfully.\n")
+
+    except Exception as e:
+        print(f"An error occurred while uploading to the database: {e}")
+
+
+def revalidate_entire_previous_day():
     """
-    Revalidate the previous few hours to catch any late updates or missed data.
-    This is especially useful for ensuring data consistency.
+    Once a day (right after midnight in Nigeria), we re-scrape the entire previous day's 24 hours
+    to ensure no hour got missed or changed. This covers hour 24 specifically.
     """
-    logging.info("Starting revalidation of previous hours...")
-    
-    # Get current Nigeria time
+    # We'll define the 'previous day' as 'today in Nigeria minus 1 day'
     now_utc = datetime.utcnow()
     now_nigeria = now_utc + timedelta(hours=1)
-    
-    # Revalidate the last 3 hours
-    hours_to_revalidate = range(-3, 1)  # -3, -2, -1, 0 (current hour)
-    
-    for offset in hours_to_revalidate:
-        target_hour = now_nigeria + timedelta(hours=offset)
-        target_hour = target_hour.replace(minute=0, second=0, microsecond=0)
-        
-        logging.info(f"Revalidating hour: {target_hour.strftime('%Y-%m-%d %H:%M')}")
-        
-        # Scrape current data
-        data_rows = scrape_disco_load_profile()
-        if data_rows:
-            # Update timestamps to match the target hour we're revalidating
-            for row in data_rows:
-                row['Date'] = target_hour
-            
-            load_to_database_delete_insert(data_rows)
-        else:
-            logging.warning(f"No data retrieved for revalidation of {target_hour}")
+    previous_day_nigeria = (now_nigeria - timedelta(days=1)).replace(hour=12, minute=0, second=0, microsecond=0)
+    # (We pick hour=12 so the scrape picks any time in that day.)
+
+    print(f"\nRevalidating entire previous day: {previous_day_nigeria.strftime('%Y-%m-%d')}")
+    entire_day_df = scrape_and_process_data(previous_day_nigeria)
+    if entire_day_df is None:
+        print("Failed scraping the entire previous day.")
+        return
+
+    # Now we do delete+insert for all 24 hours
+    load_to_database_delete_insert(entire_day_df)
+    print("Finished revalidating entire previous day.\n")
+
 
 def main():
-    """
-    Main function that orchestrates the scraping and database operations.
-    Designed to be run every hour via GitHub Actions.
-    """
     try:
-        logging.info("=== Starting DISCO Load Profile ETL Process ===")
-        
-        # Get current Nigeria time
+        # 1) Determine 'target_nigeria' as "Now in Nigeria (UTC+1) minus 1 hour".
         now_utc = datetime.utcnow()
         now_nigeria = now_utc + timedelta(hours=1)
-        
-        logging.info(f"Current Nigeria time: {now_nigeria.strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        # Strategy: Always scrape current data and store with current timestamp
-        # This captures the "live" load allocation at this moment
-        
-        # 1. Scrape current DISCO load profile
-        data_rows = scrape_disco_load_profile()
-        
-        if data_rows:
-            # 2. Load to database
-            load_to_database_delete_insert(data_rows)
-            
-            # 3. If it's early morning (1-3 AM), do additional revalidation
-            if now_nigeria.hour in [1, 2, 3]:
-                logging.info("Early morning detected, performing additional revalidation...")
-                revalidate_previous_hours()
-        else:
-            logging.error("Failed to scrape DISCO load profile data")
-            return False
-        
-        logging.info("=== DISCO Load Profile ETL Process Completed Successfully ===")
-        return True
-        
+        target_nigeria = now_nigeria - timedelta(hours=1)
+        target_nigeria = target_nigeria.replace(minute=0, second=0, microsecond=0)
+        print("Base target hour (Nigeria time):", target_nigeria.strftime("%Y-%m-%d %H:%M"))
+
+        # 2) If the local Nigeria time's hour is "00" or "01", re-validate entire previous day.
+        if now_nigeria.hour in [0, 1]:
+            revalidate_entire_previous_day()
+
+        # 2A) ADDITIONAL REVALIDATION at 6 AM:
+        # This extra pass re-scrapes the entire previous day once more, capturing any late updates.
+        if now_nigeria.hour == 6:
+            revalidate_entire_previous_day()
+
+        # 3) Re-check the previous 3 hours plus the new hour for the current day (or day that includes target_nigeria).
+        #    That means offsets of -2, -1, 0, +1 from the base. If you only want EXACTLY the last 3 plus current,
+        #    do range(-3,1).
+        hours_to_revalidate = range(-3, 2)  # -3, -2, -1, 0, +1
+
+        for offset in hours_to_revalidate:
+            check_hour = target_nigeria + timedelta(hours=offset)
+            entire_day_df = scrape_and_process_data(check_hour)
+            if entire_day_df is None:
+                print(f"Failed scraping day for {check_hour.date()}, skipping offset={offset}...")
+                continue
+
+            # Format hour "HH:00", if midnight then "24:00"
+            target_hour_str = check_hour.strftime("%H:00")
+            if target_hour_str == "00:00":
+                target_hour_str = "24:00"
+
+            # Filter for exactly that hour
+            one_hour_df = entire_day_df[
+                (entire_day_df['Date'] == check_hour.strftime('%Y-%m-%d')) &
+                (entire_day_df['Hour'] == target_hour_str)
+            ].copy()
+
+            if one_hour_df.empty:
+                print(f"No data found for hour={target_hour_str} on {check_hour.strftime('%Y-%m-%d')}.")
+                continue
+
+            # Load to DB via delete+insert
+            load_to_database_delete_insert(one_hour_df)
+
+        print("ETL process with revalidation completed successfully.")
+
     except Exception as e:
-        logging.error(f"Error in main process: {e}")
-        return False
+        print(f"An error occurred in the main process: {e}")
+
 
 if __name__ == "__main__":
-    success = main()
-    if not success:
-        exit(1)  # Exit with error code for GitHub Actions
+    main()
