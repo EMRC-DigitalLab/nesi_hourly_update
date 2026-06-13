@@ -131,11 +131,11 @@ def load_to_database_delete_insert(df):
     print("Starting database upload (delete+insert mode)...")
     try:
         # Database connection details
-        db_host = "148.251.246.72"
+        db_host = "31.97.56.29"
         db_port = 3306
         db_name = "jksutauf_nesidb"
         db_user = "jksutauf_martins"
-        db_password = "12345678"
+        db_password = "Pass1234"
 
         db_connection = pymysql.connect(
             host=db_host,
