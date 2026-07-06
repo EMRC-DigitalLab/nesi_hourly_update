@@ -142,11 +142,11 @@ def load_to_database_delete_insert(data_rows):
     try:
         # Database connection details
         db_connection = pymysql.connect(
-            host="148.251.246.72",
+            host="31.97.56.29",
             port=3306,
             database="jksutauf_nesidb",
             user="jksutauf_martins",
-            password="12345678"
+            password="Pass1234"
         )
         cursor = db_connection.cursor()
         
