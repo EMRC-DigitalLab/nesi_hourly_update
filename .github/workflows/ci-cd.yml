@@ -90,10 +90,11 @@ jobs:
           HEALTHCHECK_URL_DISCO: ${{ secrets.HEALTHCHECK_URL_DISCO }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           RERUN_SECRET: ${{ secrets.RERUN_SECRET }}
-          REPORT_FROM: ${{ vars.REPORT_FROM }}
-          REPORT_TO: ${{ vars.REPORT_TO }}
-          PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
-          DASHBOARD_USERS: ${{ vars.DASHBOARD_USERS }}
+          # Non-secret settings: read from Variables, or Secrets if stored there.
+          REPORT_FROM: ${{ vars.REPORT_FROM || secrets.REPORT_FROM }}
+          REPORT_TO: ${{ vars.REPORT_TO || secrets.REPORT_TO }}
+          PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL || secrets.PUBLIC_BASE_URL }}
+          DASHBOARD_USERS: ${{ vars.DASHBOARD_USERS || secrets.DASHBOARD_USERS }}
         run: |
           test -n "$DB_PASSWORD" || { echo "DB_PASSWORD secret is not set"; exit 1; }
           # Sent over SSH stdin, never as a command-line argument; file is owner-only.
