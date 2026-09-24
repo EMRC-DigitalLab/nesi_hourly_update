@@ -455,12 +455,14 @@ def _handler(settings: Settings, store: Store) -> type[BaseHTTPRequestHandler]:
 
             if path == "/login":
                 email = form.get("email", "").strip().lower()
-                if allowed(email) and settings.reports_enabled:
-                    token = store.create_login_token(email)
-                    if token:
-                        self._email_sign_in(email, token)
+                if not allowed(email):
+                    log.warning("Sign-in requested for an email not on the people list")
+                elif not settings.reports_enabled:
+                    log.error("Can't send sign-in link: set RESEND_API_KEY and REPORT_FROM")
+                elif token := store.create_login_token(email):
+                    self._email_sign_in(email, token)
                 else:
-                    log.warning("Sign-in requested for an email not on the allowed list")
+                    log.info("Sign-in link for %s not re-sent: one was sent less than a minute ago", email)
                 minutes = LOGIN_TOKEN_TTL // 60
                 text = (
                     f"If <b>{e(email)}</b> has access, a sign-in link is on its way. "
@@ -570,7 +572,8 @@ def _handler(settings: Settings, store: Store) -> type[BaseHTTPRequestHandler]:
             try:
                 mailer.send(settings, "Your NESI sign-in link", html_body, text, to=(email,))
             except Exception:
-                log.exception("Could not send sign-in email")
+                log.exception("Could not send sign-in email to %s", email)
+                store.discard_login_token(token)  # so they can retry straight away
 
     return Handler
 

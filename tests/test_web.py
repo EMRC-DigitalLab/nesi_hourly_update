@@ -98,6 +98,19 @@ def test_sign_in_and_queue_reruns(site, store):
     )
 
 
+def test_failed_send_allows_immediate_retry(site, monkeypatch):
+    get, post, sent, _ = site
+
+    def boom(*a, **k):
+        raise OSError("resend down")
+
+    monkeypatch.setattr(mailer, "send", boom)
+    post("/login", email="ops@raven.example")
+    monkeypatch.setattr(mailer, "send", lambda s, subject, html, text, to=(): sent.append((to, text)))
+    post("/login", email="ops@raven.example")
+    assert len(sent) == 1  # not blocked by the one-per-minute limit
+
+
 def test_sign_in_link_works_once(site):
     get, post, sent, _ = site
     post("/login", email="ops@raven.example")

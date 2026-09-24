@@ -258,6 +258,10 @@ class Store:
             db.execute("COMMIT")
         return token
 
+    def discard_login_token(self, token: str) -> None:
+        with self._db() as db:
+            db.execute("DELETE FROM login_tokens WHERE token_hash = ?", (_hash(token),))
+
     def consume_login_token(self, token: str, now: float | None = None) -> str | None:
         """Email for a valid unused token (marking it used), else None."""
         now = now or time.time()
