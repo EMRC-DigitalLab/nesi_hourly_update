@@ -15,7 +15,7 @@ from urllib.parse import urlencode
 from nesi.config import Settings
 
 LINK_TTL = 24 * 3600  # email re-run link
-SESSION_TTL = 7 * 24 * 3600  # sign-in session
+SESSION_TTL = 30 * 24 * 3600  # sign-in session
 
 
 def _mac(secret: str, message: str) -> str:

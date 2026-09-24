@@ -25,7 +25,7 @@ The **Re-run now** button in the email opens a signed link (valid 24 hours). Ope
 
 ## Re-run site: https://nesi-alert.raven-emrc.com
 
-- **Sign in** with an email sign-in link (via Resend). Only people on the site's list get one; links work once and expire in 15 minutes; sessions last 7 days.
+- **Sign in** with email + password; sessions last 30 days. Signing in never sends email. The only emails are a one-time set-password link: in the welcome email when someone is added (valid 7 days), or from "First time here, or forgot your password?" (valid 1 hour). After 5 wrong passwords an account is locked for 15 minutes (setting a new password unlocks it).
 - **People with access**: owners come from `DASHBOARD_USERS` and can't be removed on the site. Anyone signed in can add or remove other people (who get a welcome email) and switch report emails on or off per person. Report emails go to `REPORT_TO` plus everyone with reports on.
 - **Re-run latest**: GENCO for today + live DISCO, then a report email.
 - **Re-run GENCO for past dates**: a day, a range or a whole month (up to 62 days). Runs one day at a time between the hourly scrapes; the requester gets an email when it finishes, listing any days that failed.

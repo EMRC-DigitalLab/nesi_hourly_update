@@ -1,4 +1,4 @@
-"""Local state in SQLite: the re-run queue/history and one-time sign-in tokens.
+"""Local state in SQLite: re-run queue/history, people, passwords and set-password tokens.
 
 Lives on a Docker volume so history survives redeploys. Only the scheduler
 container touches it (web thread, scheduler loop and `nesi rerun` CLI).
@@ -33,11 +33,13 @@ CREATE TABLE IF NOT EXISTS runs (
     finished_at  TEXT
 );
 CREATE TABLE IF NOT EXISTS users (
-    email    TEXT PRIMARY KEY,
-    reports  INTEGER NOT NULL DEFAULT 1,     -- also receives the report emails
-    added_by TEXT NOT NULL,
-    added_at TEXT NOT NULL
+    email         TEXT PRIMARY KEY,
+    reports       INTEGER NOT NULL DEFAULT 1,  -- also receives the report emails
+    added_by      TEXT NOT NULL,
+    added_at      TEXT NOT NULL,
+    password_hash TEXT                         -- NULL until they set one
 );
+-- One-time links to set or reset a password.
 CREATE TABLE IF NOT EXISTS login_tokens (
     token_hash TEXT PRIMARY KEY,
     email      TEXT NOT NULL,
@@ -45,10 +47,35 @@ CREATE TABLE IF NOT EXISTS login_tokens (
     expires_at REAL NOT NULL,
     used       INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS login_failures (
+    email TEXT NOT NULL,
+    at    REAL NOT NULL
+);
 """
 
-LOGIN_TOKEN_TTL = 15 * 60  # seconds
-LOGIN_EMAIL_INTERVAL = 60  # seconds between sign-in emails to one address
+RESET_TOKEN_TTL = 60 * 60  # "forgot password" link
+INVITE_TOKEN_TTL = 7 * 24 * 3600  # set-password link in the welcome email
+LOGIN_EMAIL_INTERVAL = 60  # seconds between password emails to one address
+MAX_FAILURES = 5  # wrong passwords per email within LOCKOUT before locking
+LOCKOUT = 15 * 60  # seconds
+
+_SCRYPT = {"n": 2**14, "r": 8, "p": 1}
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.scrypt(password.encode(), salt=salt, **_SCRYPT)
+    return f"scrypt${salt.hex()}${digest.hex()}"
+
+
+def check_password(password: str, stored: str | None) -> bool:
+    if not stored:
+        # Same work as a real check, so timing doesn't reveal who has a password.
+        hashlib.scrypt(password.encode(), salt=b"0" * 16, **_SCRYPT)
+        return False
+    _, salt, digest = stored.split("$")
+    candidate = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt), **_SCRYPT)
+    return secrets.compare_digest(candidate.hex(), digest)
 
 
 @dataclass(frozen=True)
@@ -102,6 +129,7 @@ class User:
     reports: bool
     added_by: str
     added_at: str
+    has_password: bool = False
 
 
 def _stamp() -> str:
@@ -119,6 +147,9 @@ class Store:
         with self._db() as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript(SCHEMA)
+            columns = {r["name"] for r in db.execute("PRAGMA table_info(users)")}
+            if "password_hash" not in columns:  # databases created before passwords existed
+                db.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
 
     @contextmanager
     def _db(self) -> Generator[sqlite3.Connection]:
@@ -202,7 +233,10 @@ class Store:
     def users(self) -> list[User]:
         with self._db() as db:
             rows = db.execute("SELECT * FROM users ORDER BY email").fetchall()
-        return [User(r["email"], bool(r["reports"]), r["added_by"], r["added_at"]) for r in rows]
+        return [
+            User(r["email"], bool(r["reports"]), r["added_by"], r["added_at"], r["password_hash"] is not None)
+            for r in rows
+        ]
 
     def has_user(self, email: str) -> bool:
         with self._db() as db:
@@ -235,9 +269,41 @@ class Store:
                 r["email"] for r in db.execute("SELECT email FROM users WHERE reports = 1 ORDER BY email")
             ]
 
-    # --- sign-in tokens ----------------------------------------------------
+    # --- passwords ----------------------------------------------------------
 
-    def create_login_token(self, email: str, now: float | None = None) -> str | None:
+    def password_hash(self, email: str) -> str | None:
+        with self._db() as db:
+            row = db.execute("SELECT password_hash FROM users WHERE email = ?", (email,)).fetchone()
+        return row["password_hash"] if row else None
+
+    def set_password(self, email: str, password: str) -> None:
+        with self._db() as db:
+            db.execute("UPDATE users SET password_hash = ? WHERE email = ?", (hash_password(password), email))
+            db.execute("DELETE FROM login_failures WHERE email = ?", (email,))
+
+    def is_locked(self, email: str, now: float | None = None) -> bool:
+        now = now or time.time()
+        with self._db() as db:
+            (count,) = db.execute(
+                "SELECT COUNT(*) FROM login_failures WHERE email = ? AND at > ?", (email, now - LOCKOUT)
+            ).fetchone()
+        return count >= MAX_FAILURES
+
+    def record_failure(self, email: str, now: float | None = None) -> None:
+        now = now or time.time()
+        with self._db() as db:
+            db.execute("DELETE FROM login_failures WHERE at < ?", (now - LOCKOUT,))
+            db.execute("INSERT INTO login_failures (email, at) VALUES (?, ?)", (email, now))
+
+    def clear_failures(self, email: str) -> None:
+        with self._db() as db:
+            db.execute("DELETE FROM login_failures WHERE email = ?", (email,))
+
+    # --- set-password tokens -----------------------------------------------
+
+    def create_login_token(
+        self, email: str, ttl: int = RESET_TOKEN_TTL, now: float | None = None
+    ) -> str | None:
         """New single-use token, or None if one was sent to this email very recently."""
         now = now or time.time()
         with self._db() as db:
@@ -253,7 +319,7 @@ class Store:
             token = secrets.token_urlsafe(32)
             db.execute(
                 "INSERT INTO login_tokens (token_hash, email, created_at, expires_at) VALUES (?, ?, ?, ?)",
-                (_hash(token), email, now, now + LOGIN_TOKEN_TTL),
+                (_hash(token), email, now, now + ttl),
             )
             db.execute("COMMIT")
         return token
@@ -261,6 +327,16 @@ class Store:
     def discard_login_token(self, token: str) -> None:
         with self._db() as db:
             db.execute("DELETE FROM login_tokens WHERE token_hash = ?", (_hash(token),))
+
+    def peek_login_token(self, token: str, now: float | None = None) -> str | None:
+        """Email for a valid unused token, without using it up."""
+        now = now or time.time()
+        with self._db() as db:
+            row = db.execute(
+                "SELECT email FROM login_tokens WHERE token_hash = ? AND used = 0 AND expires_at >= ?",
+                (_hash(token), now),
+            ).fetchone()
+        return row["email"] if row else None
 
     def consume_login_token(self, token: str, now: float | None = None) -> str | None:
         """Email for a valid unused token (marking it used), else None."""

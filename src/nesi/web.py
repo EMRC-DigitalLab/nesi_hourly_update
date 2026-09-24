@@ -1,11 +1,15 @@
 """The re-run site at PUBLIC_BASE_URL.
 
 Routes:
-  /login, /auth, /logout   email sign-in link (Resend), 7-day signed session cookie
-  /                        re-run latest data or GENCO for chosen dates, recent history
-  /runs                    POST: queue a re-run (signed in + CSRF token)
+  /login, /logout          email + password, 30-day signed session cookie
+  /forgot, /set-password   emailed one-time link to set or reset a password
+  /                        re-run latest data or GENCO for chosen dates, history, people
+  /runs, /people           POST: queue a re-run / manage people (signed in + CSRF token)
   /rerun                   one-click link from the report email (signed, 24 h)
   /healthz                 liveness
+
+The only emails sent are the set-password links: when someone is added, and
+when they ask to reset. Signing in never sends email.
 
 Runs in a thread of the scheduler process; it only queues work in the Store,
 and the scheduler loop executes it, so jobs never overlap.
@@ -25,11 +29,12 @@ from urllib.parse import parse_qs, urlencode, urlparse
 from nesi import auth, mailer
 from nesi.clock import now_wat
 from nesi.config import Settings
-from nesi.store import LOGIN_TOKEN_TTL, Run, Store, User
+from nesi.store import INVITE_TOKEN_TTL, RESET_TOKEN_TTL, Run, Store, User, check_password
 
 log = logging.getLogger(__name__)
 
 COOKIE = "nesi_session"
+MIN_PASSWORD = 10
 MAX_DAYS = 62
 EARLIEST = date(2020, 1, 1)
 e = html.escape
@@ -46,7 +51,8 @@ ERRORS = {
     "self": "You can't remove yourself.",
 }
 NOTICES = {
-    "added": "Added {email}. They've been emailed how to sign in.",
+    "added": "Added {email}. They've been emailed a link to set their password.",
+    "invited": "Sent {email} a new link to set their password.",
     "exists": "{email} already has access.",
     "removed": "Removed {email}.",
     "reports-on": "Report emails on for {email}.",
@@ -138,7 +144,9 @@ tr:last-child td{border-bottom:0}
 form.add{margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}
 .grow{flex:1;min-width:220px}
 label.check{display:flex;gap:6px;align-items:center;color:var(--ink);font-size:14px;margin:0 0 8px}
-td form{margin:0}
+td form{margin:0}form.inline{display:inline}
+.field{margin-bottom:12px}.field input{width:100%}
+.links{margin-top:14px;font-size:13px}.links a{color:var(--muted)}
 @media (max-width:600px){.hide-sm{display:none}}
 """
 
@@ -231,12 +239,16 @@ def _people(users: list[User], owners: frozenset[str], me: str, csrf: str) -> st
                 f'<form method="post" action="/people">{hidden}<input type="hidden" name="action" value="remove">'
                 '<button class="linkbtn" type="submit">Remove</button></form>'
             )
-        added = (
-            ""
-            if u.added_by == "setup"
-            else f'<div class="sub">Added by {e(u.added_by)} · {e(u.added_at)}</div>'
-        )
-        rows.append(f"<tr><td>{e(u.email)}{added}</td><td>{toggle}</td><td>{remove}</td></tr>")
+        details = [] if u.added_by == "setup" else [f"Added by {e(u.added_by)} · {e(u.added_at)}"]
+        if not u.has_password:
+            details.append(
+                "Hasn't set a password yet · "
+                f'<form method="post" action="/people" class="inline">{hidden}'
+                '<input type="hidden" name="action" value="invite">'
+                '<button class="linkbtn" type="submit">Resend link</button></form>'
+            )
+        sub = "".join(f'<div class="sub">{d}</div>' for d in details)
+        rows.append(f"<tr><td>{e(u.email)}{sub}</td><td>{toggle}</td><td>{remove}</td></tr>")
     return f"""
   <table><tr><th>Email</th><th>Report emails</th><th></th></tr>{"".join(rows)}</table>
   <form method="post" action="/people" class="add">
@@ -305,20 +317,54 @@ def dashboard(
 <section>
   <h2>People with access</h2>
   <p class="help">Everyone here can sign in, run re-runs and add or remove people. New people get
-  an email telling them how to sign in.</p>
+  one email with a link to set their password.</p>
   {_people(users, owners, user, csrf)}
 </section>"""
     return page("Re-run", body, user=user, csrf=csrf, refresh=any(r.active for r in runs))
 
 
 def _card(title: str, text: str, extra: str = "") -> str:
-    return f'<section class="narrow"><h1>{e(title)}</h1><p class="help">{text}</p>{extra}</section>'
+    help_text = f'<p class="help">{text}</p>' if text else ""
+    return f'<section class="narrow"><h1>{e(title)}</h1>{help_text}{extra}</section>'
 
 
-LOGIN_FORM = """<form method="post" action="/login">
-  <label for="email">Work email</label>
-  <input type="email" id="email" name="email" required autocomplete="email" autofocus>
-  <p><button class="btn" type="submit">Email me a sign-in link</button></p></form>"""
+def _error(message: str) -> str:
+    return f'<div class="note err">{e(message)}</div>' if message else ""
+
+
+def login_page(email: str = "", error: str = "") -> bytes:
+    form = f"""{_error(error)}<form method="post" action="/login">
+  <div class="field"><label for="email">Email</label>
+    <input type="email" id="email" name="email" value="{e(email)}" required autocomplete="username" autofocus></div>
+  <div class="field"><label for="password">Password</label>
+    <input type="password" id="password" name="password" required autocomplete="current-password"></div>
+  <button class="btn" type="submit">Sign in</button></form>
+<p class="links"><a href="/forgot">First time here, or forgot your password?</a></p>"""
+    return page("Sign in", _card("Sign in", "", form))
+
+
+def forgot_page(error: str = "") -> bytes:
+    form = f"""{_error(error)}<form method="post" action="/forgot">
+  <div class="field"><label for="email">Email</label>
+    <input type="email" id="email" name="email" required autocomplete="email" autofocus></div>
+  <button class="btn" type="submit">Email me a link</button></form>
+<p class="links"><a href="/login">Back to sign in</a></p>"""
+    text = "We'll email you a link to set your password. You only need this once."
+    return page("Set your password", _card("Set your password", text, form))
+
+
+def set_password_page(email: str, token: str, error: str = "") -> bytes:
+    form = f"""{_error(error)}<form method="post" action="/set-password">
+  <input type="hidden" name="token" value="{e(token)}">
+  <input type="email" name="email" value="{e(email)}" autocomplete="username" hidden>
+  <div class="field"><label for="password">New password</label>
+    <input type="password" id="password" name="password" required minlength="{MIN_PASSWORD}"
+      autocomplete="new-password" autofocus></div>
+  <div class="field"><label for="confirm">Type it again</label>
+    <input type="password" id="confirm" name="confirm" required autocomplete="new-password"></div>
+  <button class="btn" type="submit">Save password and sign in</button></form>"""
+    text = f"For <b>{e(email)}</b>. At least {MIN_PASSWORD} characters."
+    return page("Set your password", _card("Set your password", text, form))
 
 
 # --- HTTP ----------------------------------------------------------------------
@@ -381,6 +427,15 @@ def _handler(settings: Settings, store: Store) -> type[BaseHTTPRequestHandler]:
                 f"{COOKIE}={value}; Path=/; Max-Age={max_age}; HttpOnly; SameSite=Lax{secure}",
             )
 
+        def _sign_in(self, email: str) -> None:
+            session = auth.make_session(secret, email)
+            self._redirect("/", (self._set_cookie(session, auth.SESSION_TTL),))
+
+        def _link_expired(self) -> None:
+            text = "This link has expired or was already used. Ask for a new one below."
+            link = '<p class="links"><a href="/forgot">Email me a new link</a></p>'
+            self._send(403, page("Link expired", _card("Link expired", text, link)))
+
         def _expired_link(self) -> None:
             self._send(
                 403,
@@ -406,17 +461,18 @@ def _handler(settings: Settings, store: Store) -> type[BaseHTTPRequestHandler]:
             if url.path == "/static/app.js":
                 return self._send(200, JS.encode(), "text/javascript; charset=utf-8")
             if url.path == "/login":
-                return self._send(
-                    200, page("Sign in", _card("Sign in", "We'll email you a sign-in link.", LOGIN_FORM))
-                )
-            if url.path == "/auth":
+                if self._session()[0]:
+                    return self._redirect("/")
+                return self._send(200, login_page())
+            if url.path == "/forgot":
+                return self._send(200, forgot_page())
+            if url.path == "/set-password":
+                # Viewing the link doesn't use it up (mail scanners open links); saving does.
                 token = query.get("token", "")
-                form = (
-                    '<form method="post" action="/auth">'
-                    f'<input type="hidden" name="token" value="{e(token)}">'
-                    '<button class="btn" type="submit">Continue</button></form>'
-                )
-                return self._send(200, page("Sign in", _card("Sign in to NESI Re-run", "", form)))
+                email = store.peek_login_token(token)
+                if not email or not allowed(email):
+                    return self._link_expired()
+                return self._send(200, set_password_page(email, token))
             if url.path == "/rerun":
                 if not auth.verify_link(secret, query.get("exp", ""), query.get("sig", "")):
                     return self._expired_link()
@@ -455,29 +511,52 @@ def _handler(settings: Settings, store: Store) -> type[BaseHTTPRequestHandler]:
 
             if path == "/login":
                 email = form.get("email", "").strip().lower()
+                if store.is_locked(email):
+                    log.warning("Sign-in blocked for %s: too many wrong passwords", email)
+                    msg = "Too many wrong attempts. Wait 15 minutes, or set a new password below."
+                    return self._send(429, login_page(email, msg))
+                # Always run the password check so timing doesn't reveal who has access.
+                ok = check_password(form.get("password", ""), store.password_hash(email)) and allowed(email)
+                if not ok:
+                    store.record_failure(email)
+                    log.info("Failed sign-in for %s", email)
+                    return self._send(401, login_page(email, "Email or password is incorrect."))
+                store.clear_failures(email)
+                log.info("Signed in: %s", email)
+                return self._sign_in(email)
+
+            if path == "/forgot":
+                email = form.get("email", "").strip().lower()
                 if not allowed(email):
-                    log.warning("Sign-in requested for an email not on the people list")
+                    log.warning("Password link requested for an email not on the people list")
                 elif not settings.reports_enabled:
-                    log.error("Can't send sign-in link: set RESEND_API_KEY and REPORT_FROM")
-                elif token := store.create_login_token(email):
-                    self._email_sign_in(email, token)
+                    log.error("Can't send password link: set RESEND_API_KEY and REPORT_FROM")
+                elif token := store.create_login_token(email, RESET_TOKEN_TTL):
+                    self._email_set_password(email, token)
                 else:
-                    log.info("Sign-in link for %s not re-sent: one was sent less than a minute ago", email)
-                minutes = LOGIN_TOKEN_TTL // 60
+                    log.info("Password link for %s not re-sent: one was sent less than a minute ago", email)
                 text = (
-                    f"If <b>{e(email)}</b> has access, a sign-in link is on its way. "
-                    f"It works once and expires in {minutes} minutes."
+                    f"If <b>{e(email)}</b> has access, a link to set your password is on its way. "
+                    "It works once and expires in 1 hour."
                 )
                 return self._send(200, page("Check your email", _card("Check your email", text)))
 
-            if path == "/auth":
-                email = store.consume_login_token(form.get("token", ""))
+            if path == "/set-password":
+                token = form.get("token", "")
+                email = store.peek_login_token(token)
                 if not email or not allowed(email):
-                    text = "This sign-in link has expired or was already used."
-                    return self._send(403, page("Sign in", _card("Link expired", text, LOGIN_FORM)))
-                log.info("Signed in: %s", email)
-                session = auth.make_session(secret, email)
-                return self._redirect("/", (self._set_cookie(session, auth.SESSION_TTL),))
+                    return self._link_expired()
+                password = form.get("password", "")
+                if len(password) < MIN_PASSWORD:
+                    error = f"Use at least {MIN_PASSWORD} characters."
+                    return self._send(400, set_password_page(email, token, error))
+                if password != form.get("confirm", ""):
+                    return self._send(400, set_password_page(email, token, "The two passwords don't match."))
+                if store.consume_login_token(token) != email:
+                    return self._link_expired()
+                store.set_password(email, password)
+                log.info("Password set for %s", email)
+                return self._sign_in(email)
 
             if path == "/rerun":
                 if not auth.verify_link(secret, form.get("exp", ""), form.get("sig", "")):
@@ -521,10 +600,13 @@ def _handler(settings: Settings, store: Store) -> type[BaseHTTPRequestHandler]:
             if action == "add":
                 if store.add_user(email, user, reports=form.get("reports") == "1"):
                     log.info("%s added %s", user, email)
-                    self._email_welcome(email, user)
+                    self._invite(email, user)
                     done = "added"
                 else:
                     done = "exists"
+            elif action == "invite":
+                self._invite(email, user)
+                done = "invited"
             elif action == "remove":
                 if email in owners:
                     return self._redirect("/?error=owner")
@@ -540,39 +622,38 @@ def _handler(settings: Settings, store: Store) -> type[BaseHTTPRequestHandler]:
                 return self._redirect("/")
             self._redirect("/?" + urlencode({"done": done, "email": email}))
 
-        def _email_welcome(self, email: str, added_by: str) -> None:
+        def _invite(self, email: str, added_by: str) -> None:
             if not settings.reports_enabled:
-                return
-            link = f"{settings.public_base_url}/login"
-            html_body = (
-                '<div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#1f2328">'
-                f"<p>{e(added_by)} gave you access to NESI Re-run, where you can re-pull GENCO and DISCO "
-                "data from niggrid.org.</p>"
-                f'<p><a href="{e(link)}" style="display:inline-block;background:#0b6e4f;color:#fff;'
-                'text-decoration:none;padding:10px 18px;border-radius:6px;font-weight:600">Sign in</a></p>'
-                '<p style="color:#656d76;font-size:12px">Enter this email address on the sign-in page and '
-                "we'll send you a one-time link.</p></div>"
-            )
-            text = f"{added_by} gave you access to NESI Re-run. Sign in: {link}"
-            try:
-                mailer.send(settings, "You now have access to NESI Re-run", html_body, text, to=(email,))
-            except Exception:
-                log.exception("Could not send welcome email")
+                log.error("Can't email %s a password link: set RESEND_API_KEY and REPORT_FROM", email)
+            elif token := store.create_login_token(email, INVITE_TOKEN_TTL):
+                self._email_set_password(email, token, added_by=added_by)
 
-        def _email_sign_in(self, email: str, token: str) -> None:
-            link = f"{settings.public_base_url}/auth?{urlencode({'token': token})}"
+        def _email_set_password(self, email: str, token: str, added_by: str | None = None) -> None:
+            link = f"{settings.public_base_url}/set-password?{urlencode({'token': token})}"
+            if added_by:
+                subject = "You now have access to NESI Re-run"
+                intro = (
+                    f"{e(added_by)} gave you access to NESI Re-run, where you can re-pull GENCO and "
+                    "DISCO data from niggrid.org. Set your password to get started; after that you "
+                    "sign in with your email and password."
+                )
+                expiry = "This link works once and expires in 7 days."
+            else:
+                subject = "Set your NESI Re-run password"
+                intro = "Use this link to set your NESI Re-run password."
+                expiry = "It works once and expires in 1 hour. If you didn't ask for this, ignore this email."
             html_body = (
                 '<div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#1f2328">'
-                "<p>Use this link to sign in to NESI Re-run. It works once and expires in 15 minutes.</p>"
+                f"<p>{intro}</p>"
                 f'<p><a href="{e(link)}" style="display:inline-block;background:#0b6e4f;color:#fff;'
-                'text-decoration:none;padding:10px 18px;border-radius:6px;font-weight:600">Sign in</a></p>'
-                '<p style="color:#656d76;font-size:12px">If you didn\'t ask for this, ignore this email.</p></div>'
+                'text-decoration:none;padding:10px 18px;border-radius:6px;font-weight:600">Set password</a></p>'
+                f'<p style="color:#656d76;font-size:12px">{expiry}</p></div>'
             )
-            text = f"Sign in to NESI Re-run (works once, expires in 15 minutes):\n{link}"
+            text = f"{html.unescape(intro)}\n\nSet your password: {link}\n\n{expiry}"
             try:
-                mailer.send(settings, "Your NESI sign-in link", html_body, text, to=(email,))
+                mailer.send(settings, subject, html_body, text, to=(email,))
             except Exception:
-                log.exception("Could not send sign-in email to %s", email)
+                log.exception("Could not send password email to %s", email)
                 store.discard_login_token(token)  # so they can retry straight away
 
     return Handler
