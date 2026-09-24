@@ -17,6 +17,22 @@ push to main → GitHub Actions: lint + tests → build image → push to GHCR �
 
 The container reaches MySQL on the host through `host.docker.internal`, from the fixed Docker network `nesi_net` (172.30.0.0/24). The `ufw` rule and the `nesi_scraper` MySQL user are scoped to that subnet; port 3306 stays closed to the internet.
 
+## Email reports and re-runs
+
+At 00:00, 09:00, 12:00, 15:00, 18:00 and 21:00 WAT (after that hour's scrape) a report is emailed via Resend: missing hours, energy so far, peak hour, top GENCOs, latest DISCO allocation and scraper status. A report is also sent the first time a job starts failing, and after every re-run.
+
+The **Re-run now** button in the email opens a signed link (valid 24 hours). Opening it only shows a Confirm button, so mail scanners that pre-open links trigger nothing; confirming re-runs the latest data and emails a fresh report.
+
+## Re-run site: https://nesi-alert.raven-emrc.com
+
+- **Sign in** with an email sign-in link (via Resend). Only people on the site's list get one; links work once and expire in 15 minutes; sessions last 7 days.
+- **People with access**: owners come from `DASHBOARD_USERS` and can't be removed on the site. Anyone signed in can add or remove other people (who get a welcome email) and switch report emails on or off per person. Report emails go to `REPORT_TO` plus everyone with reports on.
+- **Re-run latest**: GENCO for today + live DISCO, then a report email.
+- **Re-run GENCO for past dates**: a day, a range or a whole month (up to 62 days). Runs one day at a time between the hourly scrapes; the requester gets an email when it finishes, listing any days that failed.
+- **Recent re-runs**: queued / running (day N of M) / done / failed, auto-refreshing.
+
+All re-runs go through one queue in the scheduler process (SQLite on the `nesi_data` volume), so they never overlap with each other or the hourly jobs. The site is served on `127.0.0.1:8101` and published by the host nginx ([deploy/nginx/](deploy/nginx/)). A latest re-run can also be started from GitHub (Actions → **Re-run scrapers**) or on the VPS with `docker compose exec scraper python -m nesi rerun`.
+
 ## Operating it (on the VPS)
 
 ```bash
@@ -53,6 +69,18 @@ docker compose run --rm scraper genco --from 2026-09-01 --to 2026-09-10   # back
 | `VPS_KNOWN_HOSTS` | The VPS's SSH host keys, as `<ip> <key>` lines |
 | `DB_PASSWORD` | Password of the `nesi_scraper` MySQL user |
 | `HEALTHCHECK_URL_GENCO` / `_DISCO` | Optional healthchecks.io ping URLs |
+| `RESEND_API_KEY` | Resend API key (sending access) |
+| `RERUN_SECRET` | `openssl rand -hex 32`; signs the re-run links |
+
+Environment **variables** (same page, not secret):
+
+| Variable | Value |
+|---|---|
+| `REPORT_FROM` | e.g. `NESI Reports <reports@raven-emrc.com>` (domain verified in Resend) |
+| `REPORT_TO` | Comma-separated recipient emails |
+| `PUBLIC_BASE_URL` | `https://nesi-alert.raven-emrc.com` |
+| `DASHBOARD_USERS` | Owner email(s), comma-separated; they add everyone else on the site |
+| `REPORT_TO` | Optional extra report recipients who don't need site access |
 
 GitHub is the single source of truth for configuration: every deploy rewrites `~/nesi/.env` on the VPS (mode 600) from these secrets, so rotating a password is "update the secret, re-run the workflow". `.env.example` documents the variables for manual runs.
 

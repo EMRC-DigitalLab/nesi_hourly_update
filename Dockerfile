@@ -14,7 +14,8 @@ RUN pip install -r requirements.txt \
  && python -m playwright install --with-deps chromium \
  && rm -rf /var/lib/apt/lists/*
 
-RUN useradd --create-home --uid 10001 app
+# /data holds the re-run history (a named volume inherits this ownership).
+RUN useradd --create-home --uid 10001 app && install -d -o app -g app /data
 COPY src/ src/
 USER app
 

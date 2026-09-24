@@ -10,6 +10,12 @@ services:
     init: true  # reaps orphaned Chromium processes
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Re-run site; loopback only, published to the internet by the host's
+    # nginx at https://nesi-alert.raven-emrc.com (deploy/nginx/).
+    ports:
+      - "127.0.0.1:8101:8080"
+    volumes:
+      - nesi_data:/data  # re-run queue/history and sign-in tokens
     networks:
       - nesi_net
     # The VPS is shared and short on memory; keep Chromium on a leash.
@@ -23,6 +29,9 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
+
+volumes:
+  nesi_data:
 
 networks:
   # Fixed subnet 172.30.0.0/24: the ufw rule and the nesi_scraper MySQL user

@@ -18,7 +18,7 @@ def _date_range(start: date, end: date) -> list[date]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="nesi", description="NESI hourly scrapers")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("scheduler", help="run genco and disco every hour (container default)")
+    sub.add_parser("scheduler", help="hourly scrapes, reports, re-run queue and site (container default)")
     genco = sub.add_parser("genco", help="scrape GENCO readings once")
     genco.add_argument(
         "--from", dest="start", type=date.fromisoformat, help="backfill start day (YYYY-MM-DD)"
@@ -27,6 +27,9 @@ def main(argv: list[str] | None = None) -> int:
         "--to", dest="end", type=date.fromisoformat, help="backfill end day (defaults to --from)"
     )
     sub.add_parser("disco", help="scrape the current DISCO load allocation once")
+    report = sub.add_parser("report", help="email the report now")
+    report.add_argument("--rerun", action="store_true", help="label it as a re-run report")
+    sub.add_parser("rerun", help="ask the running scheduler to re-run all jobs now")
     sub.add_parser("check-db", help="verify DB connectivity, permissions and unique keys")
     sub.add_parser("healthcheck", help="exit 0 if the scheduler heartbeat is fresh")
     args = parser.parse_args(argv)
@@ -61,6 +64,15 @@ def main(argv: list[str] | None = None) -> int:
             from nesi import disco
 
             disco.run(settings)
+        elif args.command == "report":
+            from nesi import report as report_job
+
+            report_job.run(settings, rerun=args.rerun)
+        elif args.command == "rerun":
+            from nesi.store import Store
+
+            run = Store(settings.state_db).enqueue_latest("command line")
+            log.info("Re-run #%d queued", run.id)
         elif args.command == "check-db":
             from nesi import db
 

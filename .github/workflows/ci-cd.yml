@@ -88,6 +88,12 @@ jobs:
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           HEALTHCHECK_URL_GENCO: ${{ secrets.HEALTHCHECK_URL_GENCO }}
           HEALTHCHECK_URL_DISCO: ${{ secrets.HEALTHCHECK_URL_DISCO }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RERUN_SECRET: ${{ secrets.RERUN_SECRET }}
+          REPORT_FROM: ${{ vars.REPORT_FROM }}
+          REPORT_TO: ${{ vars.REPORT_TO }}
+          PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
+          DASHBOARD_USERS: ${{ vars.DASHBOARD_USERS }}
         run: |
           test -n "$DB_PASSWORD" || { echo "DB_PASSWORD secret is not set"; exit 1; }
           # Sent over SSH stdin, never as a command-line argument; file is owner-only.
@@ -99,6 +105,12 @@ jobs:
             echo "DB_PASSWORD=$DB_PASSWORD"
             echo "HEALTHCHECK_URL_GENCO=$HEALTHCHECK_URL_GENCO"
             echo "HEALTHCHECK_URL_DISCO=$HEALTHCHECK_URL_DISCO"
+            echo "RESEND_API_KEY=$RESEND_API_KEY"
+            echo "REPORT_FROM=$REPORT_FROM"
+            echo "REPORT_TO=$REPORT_TO"
+            echo "PUBLIC_BASE_URL=$PUBLIC_BASE_URL"
+            echo "RERUN_SECRET=$RERUN_SECRET"
+            echo "DASHBOARD_USERS=$DASHBOARD_USERS"
             echo "IMAGE_TAG=${{ github.sha }}"
           } | ssh vps "umask 077 && cat > $APP_DIR/.env"
 

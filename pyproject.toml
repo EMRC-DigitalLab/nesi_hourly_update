@@ -15,3 +15,8 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# Inline HTML/CSS templates are clearer unwrapped.
+"src/nesi/report.py" = ["E501"]
+"src/nesi/web.py" = ["E501"]
