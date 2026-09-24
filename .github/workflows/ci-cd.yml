@@ -127,10 +127,13 @@ jobs:
             || docker network create --subnet 172.30.0.0/24 nesi_net
           export DOCKER_CONFIG=\$PWD/.docker
           echo "$GHCR_TOKEN" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-          docker compose pull
+          # This script arrives on stdin, so docker commands get </dev/null (and -T)
+          # to stop them swallowing the lines after them.
+          docker compose pull </dev/null
           docker logout ghcr.io
-          docker compose run --rm scraper check-db
-          docker compose up -d --remove-orphans
+          docker compose run --rm -T scraper check-db </dev/null
+          docker compose up -d --remove-orphans </dev/null
+          docker inspect nesi_scraper >/dev/null  # fail here, not later, if it didn't start
           # Remove older nesi images only; other services' images are left alone.
           docker image ls $IMAGE --format '{{.Repository}}:{{.Tag}}' \
             | grep -v ":${{ github.sha }}\$" | xargs -r docker image rm || true
