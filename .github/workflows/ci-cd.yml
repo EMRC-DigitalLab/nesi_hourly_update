@@ -1,0 +1,136 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/emrc-digitallab/nesi-hourly-update
+  APP_DIR: nesi  # relative to the deploy user's home on the VPS
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: pytest -q
+
+  build:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency: production-deploy
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host vps
+            HostName ${{ secrets.VPS_HOST }}
+            User ${{ secrets.VPS_USER }}
+            IdentityFile ~/.ssh/id_deploy
+            StrictHostKeyChecking yes
+          EOF
+
+      - name: Upload compose file
+        run: |
+          ssh vps "mkdir -p $APP_DIR"
+          scp compose.yml vps:$APP_DIR/compose.yml
+
+      - name: Write .env from GitHub secrets
+        env:
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          HEALTHCHECK_URL_GENCO: ${{ secrets.HEALTHCHECK_URL_GENCO }}
+          HEALTHCHECK_URL_DISCO: ${{ secrets.HEALTHCHECK_URL_DISCO }}
+        run: |
+          test -n "$DB_PASSWORD" || { echo "DB_PASSWORD secret is not set"; exit 1; }
+          # Sent over SSH stdin, never as a command-line argument; file is owner-only.
+          {
+            echo "DB_HOST=host.docker.internal"
+            echo "DB_PORT=3306"
+            echo "DB_NAME=jksutauf_nesidb"
+            echo "DB_USER=nesi_scraper"
+            echo "DB_PASSWORD=$DB_PASSWORD"
+            echo "HEALTHCHECK_URL_GENCO=$HEALTHCHECK_URL_GENCO"
+            echo "HEALTHCHECK_URL_DISCO=$HEALTHCHECK_URL_DISCO"
+            echo "IMAGE_TAG=${{ github.sha }}"
+          } | ssh vps "umask 077 && cat > $APP_DIR/.env"
+
+      - name: Pull and restart
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Registry login goes to a private DOCKER_CONFIG so it never touches the
+          # credentials other services on this VPS use; the token expires with this job.
+          ssh vps "bash -s" <<EOF
+          set -euo pipefail
+          cd $APP_DIR
+          docker network inspect nesi_net >/dev/null 2>&1 \
+            || docker network create --subnet 172.30.0.0/24 nesi_net
+          export DOCKER_CONFIG=\$PWD/.docker
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker compose pull
+          docker logout ghcr.io
+          docker compose run --rm scraper check-db
+          docker compose up -d --remove-orphans
+          # Remove older nesi images only; other services' images are left alone.
+          docker image ls $IMAGE --format '{{.Repository}}:{{.Tag}}' \
+            | grep -v ":${{ github.sha }}\$" | xargs -r docker image rm || true
+          EOF
+
+      - name: Wait for healthy container
+        run: |
+          for i in $(seq 1 12); do
+            status=$(ssh vps "docker inspect -f '{{.State.Health.Status}}' nesi_scraper")
+            echo "health: $status"
+            [ "$status" = healthy ] && exit 0
+            sleep 10
+          done
+          ssh vps "docker logs --tail 50 nesi_scraper"
+          exit 1

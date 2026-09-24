@@ -1,0 +1,32 @@
+name: nesi
+
+services:
+  scraper:
+    image: ghcr.io/emrc-digitallab/nesi-hourly-update:${IMAGE_TAG:-latest}
+    container_name: nesi_scraper
+    command: ["scheduler"]
+    env_file: .env
+    restart: unless-stopped
+    init: true  # reaps orphaned Chromium processes
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - nesi_net
+    # The VPS is shared and short on memory; keep Chromium on a leash.
+    mem_limit: 1g
+    cpus: 1.0
+    shm_size: 256m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+networks:
+  # Fixed subnet 172.30.0.0/24: the ufw rule and the nesi_scraper MySQL user
+  # are both scoped to it. Created once with:
+  #   docker network create --subnet 172.30.0.0/24 nesi_net
+  nesi_net:
+    external: true
